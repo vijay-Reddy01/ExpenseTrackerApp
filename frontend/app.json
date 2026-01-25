@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "AI Expense Tracker",
+    "slug": "ai-expense-tracker",
+    "version": "1.0.0",
+    "sdkVersion": "51.0.0",
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "6ad255c7-81a7-49f1-a1d5-19f2775ae846"
+      }
+    },
+    "android": {
+      "package": "com.vijaychalla.aiexpensetracker"
+    }
+  }
+}

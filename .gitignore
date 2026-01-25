@@ -1,0 +1,33 @@
+# --- Node ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Env files ---
+.env
+backend/.env
+frontend/.env
+
+# --- Expo ---
+.expo/
+dist/
+web-build/
+
+# --- Logs ---
+*.log
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- MongoDB local files (VERY IMPORTANT) ---
+data/
+data/db/
+data/_tmp/
+WiredTiger*
+*.lock
+
+# --- Python cache (if any) ---
+__pycache__/
+*.pyc
