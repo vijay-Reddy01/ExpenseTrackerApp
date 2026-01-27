@@ -11,8 +11,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { sendMail } from "./utils/mailer.js";
 import cron from "node-cron";
+import OpenAI from "openai";
 
 const app = express();
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 /* =======================
    MIDDLEWARE
@@ -79,6 +84,42 @@ function sinceDate(period) {
   const days = period === "weekly" ? 7 : 30;
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 }
+
+async function getSpendingSuggestions({ period, income, expenses }) {
+  const totals = expenses.reduce((acc, e) => {
+    const c = (e.category || "other").toLowerCase();
+    acc[c] = (acc[c] || 0) + Number(e.amount || 0);
+    return acc;
+  }, {});
+
+  const payload = {
+    period,
+    income,
+    total: expenses.reduce((s, e) => s + Number(e.amount || 0), 0),
+    categories: totals,
+  };
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a personal finance assistant. Give short, practical advice. Return exactly 6 bullet points.",
+      },
+      {
+        role: "user",
+        content: `Analyze this spending JSON and suggest where to reduce expenses:\n${JSON.stringify(
+          payload
+        )}`,
+      },
+    ],
+    temperature: 0.4,
+  });
+
+  return completion.choices[0].message.content;
+}
+
 
 function isLastDayOfMonth(date = new Date()) {
   const tomorrow = new Date(date);
@@ -258,15 +299,31 @@ app.post("/api/insights/email", async (req, res) => {
 
     const total = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
-    const text = `
+    let aiTips = "";
+try {
+  aiTips = await getSpendingSuggestions({
+    period,
+    income: user.income,
+    expenses,
+  });
+} catch (e) {
+  console.error("AI failed:", e.message);
+}
+
+
+   const text = `
 Expense Summary (${period.toUpperCase()})
 
 Total Expenses: ₹${total}
-Income: ₹${Number(user.income || 0)}
+Income: ₹${user.income}
+
+AI Suggestions:
+${aiTips || "No suggestions available"}
 
 Transactions:
-${expenses.map((e) => `• ${e.name} - ₹${e.amount}`).join("\n")}
+${expenses.map(e => `• ${e.name} - ₹${e.amount} (${e.category})`).join("\n")}
 `;
+
 
     await sendMail({
       to: email,
