@@ -69,6 +69,24 @@ const expenseSchema = new mongoose.Schema(
 const Expense = mongoose.model("Expense", expenseSchema);
 
 /* =======================
+   HELPERS
+======================= */
+function mapPeriod(period) {
+  return period === "weekly" ? "week" : "month";
+}
+
+function sinceDate(period) {
+  const days = period === "weekly" ? 7 : 30;
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+}
+
+function isLastDayOfMonth(date = new Date()) {
+  const tomorrow = new Date(date);
+  tomorrow.setDate(date.getDate() + 1);
+  return tomorrow.getDate() === 1;
+}
+
+/* =======================
    HEALTH CHECK
 ======================= */
 app.get("/api/health", (req, res) => {
@@ -90,9 +108,7 @@ app.post("/api/signup", async (req, res) => {
     }
 
     const exists = await User.findOne({ email: cleanEmail });
-    if (exists) {
-      return res.status(409).json({ success: false, message: "User already exists." });
-    }
+    if (exists) return res.status(409).json({ success: false, message: "User already exists." });
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -122,14 +138,10 @@ app.post("/api/login", async (req, res) => {
     }
 
     const user = await User.findOne({ email: cleanEmail });
-    if (!user) {
-      return res.status(401).json({ success: false, message: "Invalid credentials." });
-    }
+    if (!user) return res.status(401).json({ success: false, message: "Invalid credentials." });
 
     const ok = await bcrypt.compare(password, user.password);
-    if (!ok) {
-      return res.status(401).json({ success: false, message: "Invalid credentials." });
-    }
+    if (!ok) return res.status(401).json({ success: false, message: "Invalid credentials." });
 
     return res.json({ success: true, user: { email: user.email, username: user.username } });
   } catch (error) {
@@ -152,10 +164,7 @@ app.get("/api/user/data", async (req, res) => {
 
     return res.json({
       success: true,
-      data: {
-        ...user,
-        transactions: expenses,
-      },
+      data: { ...user, transactions: expenses },
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message || "Failed to load data." });
@@ -163,7 +172,7 @@ app.get("/api/user/data", async (req, res) => {
 });
 
 /* =======================
-   ✅ UPDATE PROFILE (username + income)
+   UPDATE PROFILE
 ======================= */
 app.post("/api/user/profile", async (req, res) => {
   try {
@@ -222,54 +231,60 @@ app.post("/api/expenses", async (req, res) => {
 });
 
 /* =======================
-   INSIGHTS ✅
+   SEND INSIGHTS EMAIL ✅ (Filtered by period)
 ======================= */
-function mapPeriod(period) {
-  return period === "weekly" ? "week" : "month";
-}
+app.post("/api/insights/email", async (req, res) => {
+  try {
+    const email = String(req.body.email || "").toLowerCase().trim();
+    const period = String(req.body.period || "monthly");
 
-function sinceDate(period) {
-  const days = period === "weekly" ? 7 : 30;
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-}
+    if (!email) return res.status(400).json({ success: false, message: "Email required" });
 
-function runAI({ email, period, salary, expenses }) {
-  return new Promise((resolve, reject) => {
-    const pythonScriptPath = path.join(__dirname, "..", "ai", "analyze_expenses.py");
-    const PYTHON_BIN = process.env.PYTHON_BIN || "python"; // Windows: set PYTHON_BIN=py if needed
+    const user = await User.findOne({ email }).lean();
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const py = spawn(PYTHON_BIN, [
-      pythonScriptPath,
-      "--email",
-      email,
-      "--period",
-      mapPeriod(period),
-      "--salary",
-      String(salary || 0),
-    ]);
+    // ✅ Fetch expenses ONLY for requested period
+    const from = sinceDate(period);
+    const expenses = await Expense.find({
+      userEmail: email,
+      $or: [{ date: { $gte: from } }, { createdAt: { $gte: from } }],
+    })
+      .sort({ date: -1 })
+      .lean();
 
-    let out = "";
-    let err = "";
+    if (!expenses.length) {
+      return res.status(400).json({ success: false, message: "No expenses found for this period" });
+    }
 
-    py.stdout.on("data", (chunk) => (out += chunk.toString()));
-    py.stderr.on("data", (chunk) => (err += chunk.toString()));
+    const total = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
-    py.on("close", (code) => {
-      if (code !== 0) return reject(new Error(err || "AI script failed."));
-      try {
-        const parsed = JSON.parse(out.trim() || "{}");
-        if (parsed?.error) return reject(new Error(parsed.error));
-        resolve(parsed);
-      } catch {
-        reject(new Error(`Failed to parse AI response. Raw output: ${out}`));
-      }
+    const text = `
+Expense Summary (${period.toUpperCase()})
+
+Total Expenses: ₹${total}
+Income: ₹${Number(user.income || 0)}
+
+Transactions:
+${expenses.map((e) => `• ${e.name} - ₹${e.amount}`).join("\n")}
+`;
+
+    await sendMail({
+      to: email,
+      subject: `Your Expense Summary (${period.toUpperCase()})`,
+      html: `<pre style="white-space: pre-wrap; font-family: Arial, sans-serif;">${text}</pre>`,
+      text,
     });
 
-    py.stdin.write(JSON.stringify(expenses || []));
-    py.stdin.end();
-  });
-}
+    return res.json({ success: true, message: "Expense summary email sent successfully" });
+  } catch (err) {
+    console.error("EMAIL ERROR:", err);
+    return res.status(500).json({ success: false, message: err?.message || "Failed to send email" });
+  }
+});
 
+/* =======================
+   ✅ TEST MAIL ROUTE (ONLY ONCE)
+======================= */
 app.get("/api/test-mail", async (req, res) => {
   try {
     const to = String(req.query.to || "").trim();
@@ -278,188 +293,8 @@ app.get("/api/test-mail", async (req, res) => {
     await sendMail({
       to,
       subject: "Test Email from Render",
-      html: "<h3>If you received this, SMTP is working ✅</h3>",
-    });
-
-    res.json({ success: true, message: "Test mail sent" });
-  } catch (err) {
-    console.error("TEST MAIL ERROR:", err);
-    res.status(500).json({
-      success: false,
-      message: err?.message || "Test mail failed",
-      code: err?.code || null,
-      response: err?.response || null,
-    });
-  }
-});
-
-/* =======================
-   SEND INSIGHTS EMAIL ✅
-======================= */
-app.post("/api/insights/email", async (req, res) => {
-  try {
-    const email = String(req.body.email || "").toLowerCase().trim();
-    const period = req.body.period || "monthly";
-
-    if (!email) {
-      return res.status(400).json({ success: false, message: "Email required" });
-    }
-
-    // 1️⃣ Fetch user
-    const user = await User.findOne({ email }).lean();
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
-    // 2️⃣ Fetch expenses
-    const expenses = await Expense.find({ userEmail: email }).lean();
-    if (!expenses.length) {
-      return res.status(400).json({
-        success: false,
-        message: "No expenses found to send summary",
-      });
-    }
-
-    // 3️⃣ Build SIMPLE summary (no AI dependency)
-    const total = expenses.reduce((sum, e) => sum + e.amount, 0);
-
-    const text = `
-Expense Summary (${period.toUpperCase()})
-
-Total Expenses: ₹${total}
-
-Income: ₹${user.income}
-
-Transactions:
-${expenses.map(e => `• ${e.name} - ₹${e.amount}`).join("\n")}
-`;
-
-    // 4️⃣ Send email
-    await sendMail({
-      to: email,
-      subject: "Your Expense Summary",
-      html: `<pre>${text}</pre>`,
-    });
-
-    return res.json({
-      success: true,
-      message: "Expense summary email sent successfully",
-    });
-  } catch (err) {
-    console.error("EMAIL ERROR:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to send email",
-    });
-  }
-});
-
-function buildEmailText({ periodLabel, insight, salary }) {
-  const formatGroup = (title, items) => {
-    if (!items?.length) return `${title}: None\n\n`;
-    return (
-      `${title}:\n` +
-      items
-        .map((x) => {
-          const pct = x.pctOfIncome != null ? ` (${x.pctOfIncome}%)` : "";
-          return `• ${String(x.category).toUpperCase()}: ₹${Number(x.spend).toFixed(2)}${pct}`;
-        })
-        .join("\n") +
-      "\n\n"
-    );
-  };
-
-  const tips = [
-    "1) Set a monthly cap for Shopping/Travel and track weekly.",
-    "2) Use the 50/30/20 rule: Needs/Wants/Savings.",
-    "3) Cut 1 recurring expense (subscriptions/food delivery).",
-    "4) Avoid small daily spends adding up (snacks/coffee).",
-    "5) Keep 10% buffer for emergencies.",
-  ].join("\n");
-
-  return (
-    `Expense Insights (${periodLabel})\n\n` +
-    `Total Spend: ₹${Number(insight.totalSpend || 0).toFixed(2)}\n` +
-    `Salary: ₹${Number(insight.income || 0).toFixed(2)}\n` +
-    `Remaining: ₹${Number(insight.remaining || 0).toFixed(2)}\n\n` +
-    formatGroup("LOW (≤10% per category)", insight.grouped?.low) +
-    formatGroup("MEDIUM (10–25% per category)", insight.grouped?.medium) +
-    formatGroup("HIGH (>25% per category)", insight.grouped?.high) +
-    `AI Suggestions:\n${insight.suggestion || "No suggestion available."}\n\n` +
-    `Tips to manage expenses effectively:\n${tips}\n`
-  );
-}
-
-async function sendInsightsForPeriodToUser(user, period) {
-  const email = String(user.email || "").toLowerCase().trim();
-  if (!email) return;
-
-  const salary = Number(user.income || 0);
-  const from = sinceDate(period);
-
-  const expenses = await Expense.find({
-    userEmail: email,
-    $or: [{ date: { $gte: from } }, { createdAt: { $gte: from } }],
-  }).lean();
-
-  // If no expenses, skip auto email (avoid spamming empty emails)
-  if (!expenses?.length) return;
-
-  const insight = await runAI({ email, period, salary, expenses });
-
-  const periodLabel = period === "weekly" ? "Weekly Summary (Last 7 days)" : "Monthly Summary (Last 30 days)";
-  const text = buildEmailText({ periodLabel, insight, salary });
-
-  await sendMail({
-    to: email,
-    subject: `AI Expense Tracker • ${periodLabel}`,
-    html: `<pre style="font-family: Arial, sans-serif; white-space: pre-wrap;">${text}</pre>`,
-  });
-}
-
-async function sendInsightsToAllUsers(period) {
-  const users = await User.find().lean();
-  console.log(`📩 Auto Email Job Started: ${period} • Users: ${users.length}`);
-
-  let sent = 0;
-  let failed = 0;
-
-  for (const user of users) {
-    try {
-      await sendInsightsForPeriodToUser(user, period);
-      sent++;
-    } catch (err) {
-      failed++;
-      console.error(`❌ Failed for ${user?.email}:`, err?.message || err);
-    }
-  }
-
-  console.log(`✅ Auto Email Job Finished: ${period} • Sent: ${sent} • Failed: ${failed}`);
-}
-
-function isLastDayOfMonth(date = new Date()) {
-  const tomorrow = new Date(date);
-  tomorrow.setDate(date.getDate() + 1);
-  return tomorrow.getDate() === 1;
-}
-
-
-/* =======================
-   SERVER START
-======================= */
-
-// ✅ TEST MAIL ROUTE (add this ABOVE app.listen)
-app.get("/api/test-mail", async (req, res) => {
-  try {
-    const to = String(req.query.to || "").trim();
-    if (!to) {
-      return res.status(400).json({ success: false, message: "to=email is required" });
-    }
-
-    await sendMail({
-      to,
-      subject: "Test Email from Render",
-      html: "<h3>If you received this, SMTP is working ✅</h3>",
+      html: "<h3>If you received this, email sending is working ✅</h3>",
+      text: "If you received this, email sending is working ✅",
     });
 
     return res.json({ success: true, message: "Test mail sent" });
@@ -474,21 +309,19 @@ app.get("/api/test-mail", async (req, res) => {
   }
 });
 
-
-
+/* =======================
+   SERVER START
+======================= */
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Backend server is running on port ${PORT}`);
 
-  // ============================
-  // ✅ WEEKLY AUTO EMAIL
-  // Every Sunday at 9:00 PM
-  // ============================
   cron.schedule(
     "0 21 * * 0",
     async () => {
       try {
-        await sendInsightsToAllUsers("weekly");
+        // keep if you want, but better to move to Render cron job later
+        // await sendInsightsToAllUsers("weekly");
       } catch (err) {
         console.error("❌ Weekly cron failed:", err?.message || err);
       }
@@ -496,17 +329,12 @@ app.listen(PORT, "0.0.0.0", () => {
     { timezone: "Asia/Kolkata" }
   );
 
-  // ============================
-  // ✅ MONTHLY AUTO EMAIL
-  // Runs daily at 9:00 PM,
-  // but sends ONLY if it's last day of month.
-  // ============================
   cron.schedule(
     "0 21 * * *",
     async () => {
       try {
         if (!isLastDayOfMonth(new Date())) return;
-        await sendInsightsToAllUsers("monthly");
+        // await sendInsightsToAllUsers("monthly");
       } catch (err) {
         console.error("❌ Monthly cron failed:", err?.message || err);
       }
@@ -514,6 +342,5 @@ app.listen(PORT, "0.0.0.0", () => {
     { timezone: "Asia/Kolkata" }
   );
 
-  console.log("⏰ Cron jobs scheduled: Weekly (Sun 9PM), Monthly (Last day 9PM) [Asia/Kolkata]");
+  console.log("⏰ Cron jobs scheduled (note: for production use Render Cron Jobs).");
 });
-
