@@ -270,32 +270,26 @@ function runAI({ email, period, salary, expenses }) {
   });
 }
 
-app.get("/api/insights", async (req, res) => {
+app.get("/api/test-mail", async (req, res) => {
   try {
-    const email = String(req.query.email || "").toLowerCase().trim();
-    const period = String(req.query.period || "monthly");
+    const to = String(req.query.to || "").trim();
+    if (!to) return res.status(400).json({ success: false, message: "to=email is required" });
 
-    if (!email) return res.status(400).json({ success: false, message: "Email required." });
+    await sendMail({
+      to,
+      subject: "Test Email from Render",
+      html: "<h3>If you received this, SMTP is working ✅</h3>",
+    });
 
-    const user = await User.findOne({ email }).lean();
-    const salary = Number(user?.income || 0);
-
-    const from = sinceDate(period);
-
-    // ✅ filter by date OR createdAt (safe)
-    const expenses = await Expense.find({
-      userEmail: email,
-      $or: [{ date: { $gte: from } }, { createdAt: { $gte: from } }],
-    }).lean();
-
-    if (!expenses || expenses.length === 0) {
-      return res.json({ success: true, insight: null });
-    }
-
-    const insight = await runAI({ email, period, salary, expenses });
-    return res.json({ success: true, insight });
+    res.json({ success: true, message: "Test mail sent" });
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message || "AI analysis failed." });
+    console.error("TEST MAIL ERROR:", err);
+    res.status(500).json({
+      success: false,
+      message: err?.message || "Test mail failed",
+      code: err?.code || null,
+      response: err?.response || null,
+    });
   }
 });
 
@@ -453,6 +447,35 @@ function isLastDayOfMonth(date = new Date()) {
 /* =======================
    SERVER START
 ======================= */
+
+// ✅ TEST MAIL ROUTE (add this ABOVE app.listen)
+app.get("/api/test-mail", async (req, res) => {
+  try {
+    const to = String(req.query.to || "").trim();
+    if (!to) {
+      return res.status(400).json({ success: false, message: "to=email is required" });
+    }
+
+    await sendMail({
+      to,
+      subject: "Test Email from Render",
+      html: "<h3>If you received this, SMTP is working ✅</h3>",
+    });
+
+    return res.json({ success: true, message: "Test mail sent" });
+  } catch (err) {
+    console.error("TEST MAIL ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || "Test mail failed",
+      code: err?.code || null,
+      response: err?.response || null,
+    });
+  }
+});
+
+
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Backend server is running on port ${PORT}`);
