@@ -11,14 +11,14 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { sendMail } from "./utils/mailer.js";
 import cron from "node-cron";
-import OpenAI from "openai";
+//import OpenAI from "openai";
 import receiptRouter from "./routes/receipt.js";
 
 const app = express();
 
-const openai = new OpenAI({
+/*const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+});*/
 
 /* =======================
    MIDDLEWARE
