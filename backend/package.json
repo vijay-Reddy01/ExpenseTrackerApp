@@ -19,9 +19,11 @@
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
     "mongoose": "^9.1.5",
+    "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.12",
-    "openai": "^6.16.0"
+    "openai": "^6.16.0",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

@@ -12,6 +12,7 @@ import { fileURLToPath } from "url";
 import { sendMail } from "./utils/mailer.js";
 import cron from "node-cron";
 import OpenAI from "openai";
+import receiptRouter from "./routes/receipt.js";
 
 const app = express();
 
@@ -24,6 +25,7 @@ const openai = new OpenAI({
 ======================= */
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use("/api/receipt", receiptRouter);
 
 /* =======================
    __dirname FIX (ESM)
