@@ -31,6 +31,35 @@ router.post("/signup", async (req, res) => {
       income: 0, // ✅ FIX: Corrected typo from "income" to "income"
     });
 
+    // PUT /api/user/profile
+router.put("/user/profile", async (req, res) => {
+  try {
+    const { email, income, username } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: "Email is required" });
+
+    const update = {};
+    if (income !== undefined) update.income = Number(income);
+    if (username) update.username = username;
+
+    const updatedUser = await User.findOneAndUpdate(
+      { email },
+      { $set: update },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.json({ success: true, user: updatedUser, message: "Profile updated" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
+
+
     // Return minimal user (do NOT return password)
     return res.json({
       success: true,
