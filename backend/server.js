@@ -13,7 +13,7 @@ import { sendMail } from "./utils/mailer.js";
 import cron from "node-cron";
 //import OpenAI from "openai";
 import receiptRouter from "./routes/receipt.js";
-import Expense from "./models/Expense.js";
+//import Expense from "./models/Expense.js";
 
 const app = express();
 
