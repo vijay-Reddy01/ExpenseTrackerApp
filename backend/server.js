@@ -277,6 +277,7 @@ app.post("/api/expenses", async (req, res) => {
   Delete Expense
 ============================*/
 // DELETE expense by id
+// DELETE expense by id
 app.delete("/api/expenses/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -292,6 +293,7 @@ app.delete("/api/expenses/:id", async (req, res) => {
     return res.status(500).json({ success: false, message: e.message });
   }
 });
+
 
 /* =======================
    SEND INSIGHTS EMAIL ✅ (Filtered by period)
