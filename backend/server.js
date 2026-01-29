@@ -13,6 +13,7 @@ import { sendMail } from "./utils/mailer.js";
 import cron from "node-cron";
 //import OpenAI from "openai";
 import receiptRouter from "./routes/receipt.js";
+import Expense from "./models/Expense.js";
 
 const app = express();
 
@@ -272,7 +273,24 @@ app.post("/api/expenses", async (req, res) => {
     return res.status(500).json({ success: false, message: error.message || "Adding expense failed." });
   }
 });
+/*============================
+  Delete Expense
+============================*/
+app.delete("/api/expenses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    const deleted = await Expense.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: "Expense not found" });
+    }
+
+    return res.json({ success: true, message: "Expense deleted" });
+  } catch (e) {
+    console.log("delete expense error:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete expense" });
+  }
+});
 /* =======================
    SEND INSIGHTS EMAIL ✅ (Filtered by period)
 ======================= */
