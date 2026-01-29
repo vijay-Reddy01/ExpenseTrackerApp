@@ -1,82 +1,147 @@
 import { Router } from "express";
 import multer from "multer";
 import Tesseract from "tesseract.js";
+import { pdf } from "pdf-to-img";
 
 const router = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 },
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
 });
 
-// simple keyword category detection
 function detectCategory(text) {
   const t = text.toLowerCase();
-
-  if (t.match(/restaurant|cafe|coffee|tea|pizza|burger|food|hotel/)) return "food";
-  if (t.match(/medical|pharmacy|apollo|clinic|hospital|tablet|medicine/)) return "medical";
-  if (t.match(/travel|uber|ola|bus|train|flight|metro/)) return "travel";
-  if (t.match(/grocery|supermarket|mart|fresh|vegetable/)) return "groceries";
-  if (t.match(/shirt|pant|jeans|dress|clothing/)) return "clothing";
-  if (t.match(/mall|amazon|flipkart|shopping/)) return "shopping";
-
+  if (t.match(/restaurant|cafe|coffee|tea|pizza|burger|biryani|food|hotel/)) return "food";
+  if (t.match(/medical|pharmacy|clinic|hospital|tablet|medicine|apollo/)) return "medical";
+  if (t.match(/uber|ola|travel|bus|train|flight|metro|fuel|petrol|diesel/)) return "travel";
+  if (t.match(/grocery|groceries|supermarket|mart|fresh|vegetable|dmart|reliance/)) return "groceries";
+  if (t.match(/shirt|pant|jeans|dress|clothing|footwear|shoes/)) return "clothing";
+  if (t.match(/amazon|flipkart|myntra|shopping|store|mall/)) return "shopping";
   return "other";
 }
 
-// find biggest amount (usually total)
 function extractAmount(text) {
-  const matches = text.match(/(\d+[.,]\d{2}|\d+)/g) || [];
-  const nums = matches
-    .map((n) => Number(n.replace(",", "")))
-    .filter((n) => !isNaN(n) && n > 0 && n < 100000);
+  const t = text.toLowerCase();
+  const lines = t.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  const keys = ["grand total", "total", "amount due", "payable", "net total", "balance due"];
+  for (const key of keys) {
+    const line = lines.find((l) => l.includes(key));
+    if (line) {
+      const m = line.match(/(\d+[.,]\d{2}|\d+)/g);
+      if (m?.length) return Number(String(m[m.length - 1]).replace(",", ""));
+    }
+  }
+
+  const nums = (t.match(/(\d+[.,]\d{2}|\d+)/g) || [])
+    .map((x) => Number(String(x).replace(",", "")))
+    .filter((n) => !Number.isNaN(n) && n > 0 && n < 1000000);
 
   if (!nums.length) return null;
-
   return Math.max(...nums);
 }
 
-// merchant guess = first readable line
 function extractName(text) {
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 3);
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
+  return (lines[0] || lines[1] || "Expense").slice(0, 50);
+}
 
-  return lines[0]?.slice(0, 40) || "Expense";
+/**
+ * Extract a date from receipt text.
+ * Supports formats like:
+ *  - 12/01/2026
+ *  - 12-01-2026
+ *  - 12 Jan 2026
+ *  - 2026-01-12
+ */
+function extractDate(text) {
+  const t = text.replace(/\s+/g, " ");
+
+  // yyyy-mm-dd
+  let m = t.match(/\b(20\d{2})[-\/](0?\d|1[0-2])[-\/]([0-2]?\d|3[01])\b/);
+  if (m) {
+    const [_, yyyy, mm, dd] = m;
+    return new Date(`${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T00:00:00.000Z`).toISOString();
+  }
+
+  // dd-mm-yyyy or dd/mm/yyyy
+  m = t.match(/\b([0-2]?\d|3[01])[-\/](0?\d|1[0-2])[-\/](20\d{2})\b/);
+  if (m) {
+    const [_, dd, mm, yyyy] = m;
+    return new Date(`${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T00:00:00.000Z`).toISOString();
+  }
+
+  // dd Mon yyyy
+  m = t.match(/\b([0-2]?\d|3[01])\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s(20\d{2})\b/i);
+  if (m) {
+    const [_, dd, mon, yyyy] = m;
+    const map = {
+      jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+      jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+    };
+    const mm = map[mon.toLowerCase().slice(0, 3)];
+    return new Date(`${yyyy}-${mm}-${String(dd).padStart(2, "0")}T00:00:00.000Z`).toISOString();
+  }
+
+  return null;
+}
+
+async function ocrBuffer(buffer) {
+  const ocr = await Tesseract.recognize(buffer, "eng");
+  return (ocr?.data?.text || "").trim();
 }
 
 router.post("/scan", upload.single("receipt"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: "No file" });
+    if (!req.file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+    const mime = req.file.mimetype;
+
+    // ✅ IMAGE CASE
+    if (mime.startsWith("image/")) {
+      const rawText = await ocrBuffer(req.file.buffer);
+
+      const data = {
+        name: extractName(rawText),
+        amount: extractAmount(rawText),
+        category: detectCategory(rawText),
+        date: extractDate(rawText), // ✅ date extracted for image
+        rawText,
+      };
+
+      return res.json({ success: true, type: "image", data });
     }
 
-    const ocr = await Tesseract.recognize(req.file.buffer, "eng");
-    const rawText = (ocr.data.text || "").trim();
+    // ✅ PDF CASE (extract each page as image, OCR, collect dates)
+    if (mime === "application/pdf") {
+      const pages = await pdf(req.file.buffer, { scale: 2 }); // scale improves OCR
+      const extracted = [];
 
-    if (!rawText) {
+      for await (const page of pages) {
+        const rawText = await ocrBuffer(page);
+        const item = {
+          name: extractName(rawText),
+          amount: extractAmount(rawText),
+          category: detectCategory(rawText),
+          date: extractDate(rawText),
+          rawText,
+        };
+        // only keep if it looks meaningful
+        if (item.amount || item.date) extracted.push(item);
+      }
+
       return res.json({
         success: true,
-        data: { name: "", amount: null, category: "other", rawText: "" },
+        type: "pdf",
+        data: extracted, // array of entries (per page)
       });
     }
 
-    const amount = extractAmount(rawText);
-    const name = extractName(rawText);
-    const category = detectCategory(rawText);
-
-    return res.json({
-      success: true,
-      data: {
-        name,
-        amount,
-        category,
-        rawText,
-      },
-    });
+    return res.status(400).json({ success: false, message: "Unsupported file type" });
   } catch (err) {
-    console.log("FREE OCR error:", err);
-    res.status(500).json({ success: false, message: "OCR failed" });
+    console.log("receipt scan error:", err);
+    return res.status(500).json({ success: false, message: err?.message || "Scan failed" });
   }
 });
 
