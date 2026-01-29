@@ -22,30 +22,49 @@ function detectCategory(text) {
 }
 
 function extractAmount(text) {
-  const t = text.toLowerCase();
-  const lines = t.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .toLowerCase()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
-  const keys = ["grand total", "total", "amount due", "payable", "net total", "balance due"];
-  for (const key of keys) {
+  const priorityKeys = [
+    "net payable",
+    "net amount",
+    "gross amt",
+    "gross amount",
+    "total",
+    "amount"
+  ];
+
+  // 1️⃣ Priority lines first
+  for (const key of priorityKeys) {
     const line = lines.find((l) => l.includes(key));
     if (line) {
-      const m = line.match(/(\d+[.,]\d{2}|\d+)/g);
-      if (m?.length) return Number(String(m[m.length - 1]).replace(",", ""));
+      const nums = line.match(/(\d+[.,]\d{2}|\d{3,6})/g);
+      if (nums?.length) {
+        return Number(nums[nums.length - 1].replace(",", ""));
+      }
     }
   }
 
-  const nums = (t.match(/(\d+[.,]\d{2}|\d+)/g) || [])
-    .map((x) => Number(String(x).replace(",", "")))
-    .filter((n) => !Number.isNaN(n) && n > 0 && n < 1000000);
+  // 2️⃣ Fallback: take biggest reasonable number
+  const allNums =
+    text.match(/(\d+[.,]\d{2}|\d{3,6})/g)?.map((n) =>
+      Number(n.replace(",", ""))
+    ) || [];
 
-  if (!nums.length) return null;
-  return Math.max(...nums);
+  if (!allNums.length) return null;
+
+  return Math.max(...allNums.filter((n) => n > 50));
 }
+
 
 function extractName(text) {
-  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
-  return (lines[0] || lines[1] || "Expense").slice(0, 50);
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.find(l => l.length > 5 && !l.match(/\d/)) || "Expense";
 }
+
 
 /**
  * Extract a date from receipt text.
