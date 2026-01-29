@@ -21,43 +21,56 @@ function detectCategory(text) {
   return "other";
 }
 
+function normalizeDigits(text) {
+  // turns "1 2 4 9 . 0 0" into "1249.00"
+  return text
+    .replace(/(\d)\s+(?=\d)/g, "$1")       // remove spaces between digits
+    .replace(/(\d)\s*[.,]\s*(\d)/g, "$1.$2") // normalize decimal separators
+    .replace(/,/g, "");
+}
+
 function extractAmount(text) {
-  const lines = text
-    .toLowerCase()
+  const normalized = normalizeDigits(text.toLowerCase());
+  const lines = normalized
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 
-  const priorityKeys = [
+  // Search on the same line and also the NEXT line (many receipts put amount on next line)
+  const keys = [
     "net payable",
     "net amount",
+    "amount payable",
+    "grand total",
+    "total",
     "gross amt",
     "gross amount",
-    "total",
-    "amount"
   ];
 
-  // 1️⃣ Priority lines first
-  for (const key of priorityKeys) {
-    const line = lines.find((l) => l.includes(key));
-    if (line) {
-      const nums = line.match(/(\d+[.,]\d{2}|\d{3,6})/g);
-      if (nums?.length) {
-        return Number(nums[nums.length - 1].replace(",", ""));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    for (const k of keys) {
+      if (line.includes(k)) {
+        const window = [line, lines[i + 1] || "", lines[i + 2] || ""].join(" ");
+        const nums = window.match(/(\d+\.\d{2}|\d{3,6})/g);
+        if (nums?.length) {
+          const val = Number(nums[nums.length - 1]);
+          if (!Number.isNaN(val) && val > 0) return val;
+        }
       }
     }
   }
 
-  // 2️⃣ Fallback: take biggest reasonable number
-  const allNums =
-    text.match(/(\d+[.,]\d{2}|\d{3,6})/g)?.map((n) =>
-      Number(n.replace(",", ""))
-    ) || [];
+  // fallback: pick biggest reasonable number
+  const allNums = (normalized.match(/(\d+\.\d{2}|\d{3,6})/g) || [])
+    .map(Number)
+    .filter((n) => !Number.isNaN(n) && n > 50 && n < 1000000);
 
   if (!allNums.length) return null;
-
-  return Math.max(...allNums.filter((n) => n > 50));
+  return Math.max(...allNums);
 }
+
 
 
 function extractName(text) {
