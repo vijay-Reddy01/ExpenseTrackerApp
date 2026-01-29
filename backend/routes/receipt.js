@@ -9,17 +9,36 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
 });
-
 function detectCategory(text) {
   const t = text.toLowerCase();
-  if (t.match(/restaurant|cafe|coffee|tea|pizza|burger|biryani|food|hotel/)) return "food";
-  if (t.match(/medical|pharmacy|clinic|hospital|tablet|medicine|apollo/)) return "medical";
-  if (t.match(/uber|ola|travel|bus|train|flight|metro|fuel|petrol|diesel/)) return "travel";
-  if (t.match(/grocery|groceries|supermarket|mart|fresh|vegetable|dmart|reliance/)) return "groceries";
-  if (t.match(/shirt|pant|jeans|dress|clothing|footwear|shoes/)) return "clothing";
-  if (t.match(/amazon|flipkart|myntra|shopping|store|mall/)) return "shopping";
+
+  // hotel / restaurant = food
+  if (t.match(/hotel|restaurant|cafe|coffee|tea|pizza|burger|biryani|food|dine|meal/))
+    return "food";
+
+  // medical
+  if (t.match(/medical|pharmacy|clinic|hospital|tablet|medicine|apollo/))
+    return "medical";
+
+  // travel / transport
+  if (t.match(/uber|ola|travel|bus|train|flight|metro|fuel|petrol|diesel|parking|toll/))
+    return "travel";
+
+  // groceries
+  if (t.match(/grocery|groceries|supermarket|mart|vegetable|dmart|reliance|store/))
+    return "groceries";
+
+  // clothing
+  if (t.match(/shirt|pant|jeans|dress|clothing|footwear|shoes|apparel/))
+    return "clothing";
+
+  // shopping ecom
+  if (t.match(/amazon|flipkart|myntra|shopping|order id|invoice/))
+    return "shopping";
+
   return "other";
 }
+
 
 function normalizeDigits(text) {
   // turns "1 2 4 9 . 0 0" into "1249.00"
@@ -90,28 +109,42 @@ function extractName(text) {
 function extractDate(text) {
   const t = text.replace(/\s+/g, " ");
 
+  // Prefer patterns near keywords
+  const keyWindow = (t.match(/(bill date|invoice date|date)\s*[:\-]?\s*([0-3]?\d[\/\-][0-1]?\d[\/\-]20\d{2})/i) || []);
+  if (keyWindow[2]) {
+    const s = keyWindow[2];
+    const m = s.match(/([0-3]?\d)[\/\-]([0-1]?\d)[\/\-](20\d{2})/);
+    if (m) {
+      const dd = String(m[1]).padStart(2, "0");
+      const mm = String(m[2]).padStart(2, "0");
+      const yyyy = m[3];
+      return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`).toISOString();
+    }
+  }
+
   // yyyy-mm-dd
   let m = t.match(/\b(20\d{2})[-\/](0?\d|1[0-2])[-\/]([0-2]?\d|3[01])\b/);
   if (m) {
     const [_, yyyy, mm, dd] = m;
-    return new Date(`${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T00:00:00.000Z`).toISOString();
+    return new Date(
+      `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}T00:00:00.000Z`
+    ).toISOString();
   }
 
-  // dd-mm-yyyy or dd/mm/yyyy
+  // dd-mm-yyyy or dd/mm/yyyy (this is your receipt format 22/09/2023)
   m = t.match(/\b([0-2]?\d|3[01])[-\/](0?\d|1[0-2])[-\/](20\d{2})\b/);
   if (m) {
     const [_, dd, mm, yyyy] = m;
-    return new Date(`${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T00:00:00.000Z`).toISOString();
+    return new Date(
+      `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}T00:00:00.000Z`
+    ).toISOString();
   }
 
   // dd Mon yyyy
   m = t.match(/\b([0-2]?\d|3[01])\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s(20\d{2})\b/i);
   if (m) {
     const [_, dd, mon, yyyy] = m;
-    const map = {
-      jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
-      jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
-    };
+    const map = { jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12" };
     const mm = map[mon.toLowerCase().slice(0, 3)];
     return new Date(`${yyyy}-${mm}-${String(dd).padStart(2, "0")}T00:00:00.000Z`).toISOString();
   }
@@ -119,8 +152,12 @@ function extractDate(text) {
   return null;
 }
 
+
 async function ocrBuffer(buffer) {
-  const ocr = await Tesseract.recognize(buffer, "eng");
+const ocr = await Tesseract.recognize(buffer, "eng", {
+  tessedit_pageseg_mode: 6,
+  preserve_interword_spaces: 1,
+});
   return (ocr?.data?.text || "").trim();
 }
 
