@@ -273,6 +273,29 @@ app.post("/api/expenses", async (req, res) => {
     return res.status(500).json({ success: false, message: error.message || "Adding expense failed." });
   }
 });
+
+/* =======================
+   GET EXPENSES BY EMAIL
+======================= */
+app.get("/api/expenses", async (req, res) => {
+  try {
+    const email = String(req.query.email || "").toLowerCase().trim();
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email required" });
+    }
+
+    const expenses = await Expense.find({ userEmail: email })
+      .sort({ date: -1 })
+      .lean();
+
+    return res.json({ success: true, data: expenses });
+  } catch (err) {
+    console.error("GET expenses error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 /*============================
   Delete Expense
 ============================*/
