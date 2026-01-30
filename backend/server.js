@@ -1,6 +1,7 @@
 // backend/server.js
 import dotenv from "dotenv";
 dotenv.config();
+import userRouter from "./routes/user.js";
 
 import express from "express";
 import mongoose from "mongoose";
@@ -17,6 +18,7 @@ const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "5mb" })); // ✅ allow base64 photo payloads
 app.use("/api/receipt", receiptRouter);
+app.use("/api/user", userRouter);
 
 /* =======================
    DATABASE

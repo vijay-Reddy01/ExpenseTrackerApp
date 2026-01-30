@@ -1,4 +1,6 @@
 // backend/routes/auth.js
+import express from "express";
+
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import User from "../models/User.js";
@@ -96,4 +98,19 @@ router.post("/login", async (req, res) => {
   }
 });
 
+router.get("/data", async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    const user = await User.findOne({ email }).select("-password");
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 export default router;
