@@ -234,25 +234,28 @@ app.post("/api/expenses", async (req, res) => {
    DELETE EXPENSE (SECURE)
    /api/expenses/:id?email=...
 ======================= */
+// ✅ DELETE expense (must send email as query param)
 app.delete("/api/expenses/:id", async (req, res) => {
   try {
-    const id = String(req.params.id || "").trim();
+    const { id } = req.params;
     const email = String(req.query.email || "").toLowerCase().trim();
 
-    if (!id) return res.status(400).json({ success: false, message: "Expense id required." });
-    if (!email) return res.status(400).json({ success: false, message: "Email required." });
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email required" });
+    }
 
-    const deleted = await Expense.findOneAndDelete({ _id: id, userEmail: email }).lean();
+    const deleted = await Expense.findOneAndDelete({ _id: id, userEmail: email });
 
     if (!deleted) {
-      return res.status(404).json({ success: false, message: "Expense not found." });
+      return res.status(404).json({ success: false, message: "Expense not found" });
     }
 
     return res.json({ success: true, message: "Deleted", deletedId: id });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err?.message || "Delete failed." });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
   }
 });
+
 
 /* =======================
    SERVER START
