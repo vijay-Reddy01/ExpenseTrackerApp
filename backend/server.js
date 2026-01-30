@@ -1,4 +1,4 @@
-// backend/server.js  (ESM - works with "type": "module")
+// backend/server.js
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -15,21 +15,17 @@ const app = express();
    MIDDLEWARE
 ======================= */
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "2mb" })); // keep JSON small; uploads use multipart
-
-// ✅ Receipt scanner
+app.use(express.json({ limit: "5mb" })); // ✅ allow base64 photo payloads
 app.use("/api/receipt", receiptRouter);
 
 /* =======================
    DATABASE
 ======================= */
-const MONGO_URI = process.env.MONGO_URI; // ✅ set this in Render env vars
-if (!MONGO_URI) {
-  console.error("❌ MONGO_URI is missing. Set it in Render Environment Variables.");
-}
+const MONGO_URI =
+  process.env.MONGO_URI || "mongodb://127.0.0.1:27017/ExpenseTrackerApp";
 
 mongoose
-  .connect(MONGO_URI, { dbName: process.env.MONGO_DB_NAME || undefined })
+  .connect(MONGO_URI)
   .then(() => console.log("✅ MongoDB connected successfully"))
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
@@ -39,16 +35,26 @@ mongoose
 const userSchema = new mongoose.Schema(
   {
     username: { type: String, required: true, trim: true },
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+      index: true,
+    },
     password: { type: String, required: true },
     income: { type: Number, default: 0 },
+
+    // ✅ store profile image (base64 data url)
+    // Example: "data:image/jpeg;base64,....."
+    photoUrl: { type: String, default: "" },
   },
   { timestamps: true }
 );
 
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 
-// ✅ Align categories with your frontend (food/shopping/clothing/groceries/travel/medical/other)
 const expenseSchema = new mongoose.Schema(
   {
     userEmail: { type: String, required: true, lowercase: true, trim: true, index: true },
@@ -90,9 +96,7 @@ app.post("/api/signup", async (req, res) => {
     }
 
     const exists = await User.findOne({ email: cleanEmail });
-    if (exists) {
-      return res.status(409).json({ success: false, message: "User already exists." });
-    }
+    if (exists) return res.status(409).json({ success: false, message: "User already exists." });
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -101,15 +105,15 @@ app.post("/api/signup", async (req, res) => {
       email: cleanEmail,
       password: hashedPassword,
       income: 0,
+      photoUrl: "",
     });
 
     return res.status(201).json({
       success: true,
       user: { email: newUser.email, username: newUser.username },
     });
-  } catch (error) {
-    console.error("❌ Signup error:", error);
-    return res.status(500).json({ success: false, message: "Server error during signup." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err?.message || "Signup failed." });
   }
 });
 
@@ -128,15 +132,17 @@ app.post("/api/login", async (req, res) => {
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) return res.status(401).json({ success: false, message: "Invalid credentials." });
 
-    return res.json({ success: true, user: { email: user.email, username: user.username } });
-  } catch (error) {
-    console.error("❌ Login error:", error);
-    return res.status(500).json({ success: false, message: "Server error during login." });
+    return res.json({
+      success: true,
+      user: { email: user.email, username: user.username },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err?.message || "Login failed." });
   }
 });
 
 /* =======================
-   USER DATA
+   USER DATA (Dashboard source)
 ======================= */
 app.get("/api/user/data", async (req, res) => {
   try {
@@ -148,21 +154,24 @@ app.get("/api/user/data", async (req, res) => {
 
     const expenses = await Expense.find({ userEmail: email }).sort({ date: -1 }).lean();
 
-    return res.json({ success: true, data: { ...user, transactions: expenses } });
-  } catch (error) {
-    console.error("❌ user/data error:", error);
-    return res.status(500).json({ success: false, message: "Server error fetching data." });
+    return res.json({
+      success: true,
+      data: { ...user, transactions: expenses },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err?.message || "Failed to load data." });
   }
 });
 
 /* =======================
-   UPDATE PROFILE
+   UPDATE PROFILE (name/income/photoUrl)
 ======================= */
 app.post("/api/user/profile", async (req, res) => {
   try {
     const email = String(req.body?.email || "").toLowerCase().trim();
     const username = String(req.body?.username || "").trim();
     const incomeNum = Number(req.body?.income);
+    const photoUrl = String(req.body?.photoUrl || "");
 
     if (!email) return res.status(400).json({ success: false, message: "Email is required." });
     if (!username) return res.status(400).json({ success: false, message: "Username is required." });
@@ -170,20 +179,27 @@ app.post("/api/user/profile", async (req, res) => {
       return res.status(400).json({ success: false, message: "Income must be a valid number." });
     }
 
-    const updatedUser = await User.findOneAndUpdate(
+    // ✅ optional safety: reject very large base64 strings (Render payload limit)
+    if (photoUrl.length > 2_000_000) {
+      return res.status(400).json({
+        success: false,
+        message: "Photo too large. Choose a smaller image.",
+      });
+    }
+
+    const updated = await User.findOneAndUpdate(
       { email },
-      { $set: { username, income: incomeNum } },
+      { $set: { username, income: incomeNum, photoUrl } },
       { new: true }
     )
       .select("-password")
       .lean();
 
-    if (!updatedUser) return res.status(404).json({ success: false, message: "User not found." });
+    if (!updated) return res.status(404).json({ success: false, message: "User not found." });
 
-    return res.json({ success: true, user: updatedUser });
-  } catch (error) {
-    console.error("❌ profile update error:", error);
-    return res.status(500).json({ success: false, message: "Server error updating profile." });
+    return res.json({ success: true, message: "Profile updated.", user: updated });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err?.message || "Profile update failed." });
   }
 });
 
@@ -193,8 +209,8 @@ app.post("/api/user/profile", async (req, res) => {
 app.post("/api/expenses", async (req, res) => {
   try {
     const { email, name, amount, category, date, description } = req.body;
-
     const cleanEmail = String(email || "").toLowerCase().trim();
+
     if (!cleanEmail || !name || amount === undefined || !category) {
       return res.status(400).json({ success: false, message: "Required fields missing." });
     }
@@ -203,36 +219,38 @@ app.post("/api/expenses", async (req, res) => {
       userEmail: cleanEmail,
       name: String(name).trim(),
       amount: Number(amount),
-      category: String(category).toLowerCase(),
+      category,
       date: date ? new Date(date) : new Date(),
       description: String(description || "").trim(),
     });
 
     return res.status(201).json({ success: true, message: "Expense added.", expense });
-  } catch (error) {
-    console.error("❌ add expense error:", error);
-    return res.status(500).json({ success: false, message: "Server error adding expense." });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err?.message || "Adding expense failed." });
   }
 });
 
 /* =======================
-   DELETE EXPENSE (email-protected)
+   DELETE EXPENSE (SECURE)
+   /api/expenses/:id?email=...
 ======================= */
 app.delete("/api/expenses/:id", async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id || "").trim();
     const email = String(req.query.email || "").toLowerCase().trim();
 
-    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+    if (!id) return res.status(400).json({ success: false, message: "Expense id required." });
+    if (!email) return res.status(400).json({ success: false, message: "Email required." });
 
-    const deleted = await Expense.findOneAndDelete({ _id: id, userEmail: email });
+    const deleted = await Expense.findOneAndDelete({ _id: id, userEmail: email }).lean();
 
-    if (!deleted) return res.status(404).json({ success: false, message: "Expense not found" });
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: "Expense not found." });
+    }
 
     return res.json({ success: true, message: "Deleted", deletedId: id });
-  } catch (e) {
-    console.error("❌ delete expense error:", e);
-    return res.status(500).json({ success: false, message: e.message || "Delete failed" });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err?.message || "Delete failed." });
   }
 });
 
@@ -240,7 +258,6 @@ app.delete("/api/expenses/:id", async (req, res) => {
    SERVER START
 ======================= */
 const PORT = process.env.PORT || 4000;
-
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Backend server is running on port ${PORT}`);
+  console.log(`✅ Backend server running on port ${PORT}`);
 });
