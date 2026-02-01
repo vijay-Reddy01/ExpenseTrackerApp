@@ -1,3 +1,4 @@
+// backend/routes/receipt.js
 import { Router } from "express";
 import multer from "multer";
 import Tesseract from "tesseract.js";
@@ -91,7 +92,6 @@ function extractName(text) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // first non-numeric long-ish line
   return lines.find((l) => l.length > 5 && !l.match(/\d/)) || "Expense";
 }
 
@@ -112,7 +112,6 @@ function extractDate(text) {
     }
   }
 
-  // yyyy-mm-dd
   let m = t.match(/\b(20\d{2})[-\/](0?\d|1[0-2])[-\/]([0-2]?\d|3[01])\b/);
   if (m) {
     const [_, yyyy, mm, dd] = m;
@@ -121,7 +120,6 @@ function extractDate(text) {
     ).toISOString();
   }
 
-  // dd-mm-yyyy or dd/mm/yyyy
   m = t.match(/\b([0-2]?\d|3[01])[-\/](0?\d|1[0-2])[-\/](20\d{2})\b/);
   if (m) {
     const [_, dd, mm, yyyy] = m;
@@ -130,7 +128,6 @@ function extractDate(text) {
     ).toISOString();
   }
 
-  // dd Mon yyyy
   m = t.match(
     /\b([0-2]?\d|3[01])\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s(20\d{2})\b/i
   );
@@ -158,7 +155,6 @@ function extractDate(text) {
 }
 
 async function ocrBuffer(buffer) {
-  // ✅ keep OCR options safe
   const ocr = await Tesseract.recognize(buffer, "eng", {
     tessedit_pageseg_mode: 6,
     preserve_interword_spaces: 1,
@@ -178,19 +174,20 @@ const uploadAnyReceiptField = (req, res, next) => {
 
   handler(req, res, (err) => {
     if (err) {
+      console.log("multer upload error:", err);
       return res.status(400).json({
         success: false,
         message: err.message || "Upload error",
       });
     }
-    // normalize into req.file so your code stays simple
+
     req.file = req.files?.receipt?.[0] || req.files?.file?.[0] || req.file;
     next();
   });
 };
 
 /* ----------------------------
-   Route
+   Route: OCR Scan
 ---------------------------- */
 router.post("/scan", uploadAnyReceiptField, async (req, res) => {
   try {
@@ -204,7 +201,6 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
     const mime = req.file.mimetype || "";
     const size = req.file.size || 0;
 
-    // ✅ basic validation
     if (size <= 0) {
       return res.status(400).json({ success: false, message: "Empty file uploaded" });
     }
@@ -218,7 +214,6 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
         amount: extractAmount(rawText),
         category: detectCategory(rawText),
         date: extractDate(rawText),
-        // rawText: rawText, // ❌ optional: uncomment only if you really need it
       };
 
       return res.json({ success: true, type: "image", data });
@@ -226,8 +221,6 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
 
     // ✅ PDF CASE
     if (mime === "application/pdf") {
-      // NOTE: pdf-to-img can fail on Render depending on environment.
-      // This try/catch gives proper JSON error instead of crashing.
       let pages;
       try {
         pages = await pdf(req.file.buffer, { scale: 2 });
@@ -235,7 +228,7 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
         return res.status(500).json({
           success: false,
           message:
-            "PDF processing failed on server. Try uploading an image (JPG/PNG) instead, or adjust Render build deps.",
+            "PDF processing failed on server. Try uploading an image (JPG/PNG) instead.",
           error: e?.message || String(e),
         });
       }
@@ -249,7 +242,6 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
           amount: extractAmount(rawText),
           category: detectCategory(rawText),
           date: extractDate(rawText),
-          // rawText: rawText,
         };
 
         if (item.amount || item.date || item.name) extracted.push(item);

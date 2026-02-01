@@ -1,7 +1,6 @@
 // backend/server.js
 import dotenv from "dotenv";
 dotenv.config();
-import userRouter from "./routes/user.js";
 
 import express from "express";
 import mongoose from "mongoose";
@@ -9,6 +8,7 @@ import cors from "cors";
 import bcrypt from "bcryptjs";
 
 import receiptRouter from "./routes/receipt.js";
+import userRouter from "./routes/user.js";
 
 const app = express();
 
@@ -16,7 +16,7 @@ const app = express();
    MIDDLEWARE
 ======================= */
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "5mb" })); // ✅ allow base64 photo payloads
+app.use(express.json({ limit: "10mb" })); // increased slightly for safety
 app.use("/api/receipt", receiptRouter);
 app.use("/api/user", userRouter);
 
@@ -47,10 +47,7 @@ const userSchema = new mongoose.Schema(
     },
     password: { type: String, required: true },
     income: { type: Number, default: 0 },
-
-    // ✅ store profile image (base64 data url)
-    // Example: "data:image/jpeg;base64,....."
-    photoUrl: { type: String, default: "" },
+    photoUrl: { type: String, default: "" }, // base64 data url
   },
   { timestamps: true }
 );
@@ -59,7 +56,13 @@ const User = mongoose.models.User || mongoose.model("User", userSchema);
 
 const expenseSchema = new mongoose.Schema(
   {
-    userEmail: { type: String, required: true, lowercase: true, trim: true, index: true },
+    userEmail: {
+      type: String,
+      required: true,
+      lowercase: true,
+      trim: true,
+      index: true,
+    },
     name: { type: String, required: true, trim: true },
     amount: { type: Number, required: true, min: 0 },
     category: {
@@ -144,7 +147,7 @@ app.post("/api/login", async (req, res) => {
 });
 
 /* =======================
-   USER DATA (Dashboard source)
+   USER DATA (Dashboard)
 ======================= */
 app.get("/api/user/data", async (req, res) => {
   try {
@@ -166,7 +169,7 @@ app.get("/api/user/data", async (req, res) => {
 });
 
 /* =======================
-   UPDATE PROFILE (name/income/photoUrl)
+   UPDATE PROFILE
 ======================= */
 app.post("/api/user/profile", async (req, res) => {
   try {
@@ -181,7 +184,6 @@ app.post("/api/user/profile", async (req, res) => {
       return res.status(400).json({ success: false, message: "Income must be a valid number." });
     }
 
-    // ✅ optional safety: reject very large base64 strings (Render payload limit)
     if (photoUrl.length > 2_000_000) {
       return res.status(400).json({
         success: false,
@@ -206,7 +208,7 @@ app.post("/api/user/profile", async (req, res) => {
 });
 
 /* =======================
-   ADD EXPENSE
+   ADD EXPENSE (Manual)
 ======================= */
 app.post("/api/expenses", async (req, res) => {
   try {
@@ -233,10 +235,38 @@ app.post("/api/expenses", async (req, res) => {
 });
 
 /* =======================
-   DELETE EXPENSE (SECURE)
-   /api/expenses/:id?email=...
+   ✅ SAVE SCANNED RECEIPT (FAST ENDPOINT)
+   Use this from mobile after ML Kit extracts data.
 ======================= */
-// ✅ DELETE expense (must send email as query param)
+app.post("/api/receipt/save", async (req, res) => {
+  try {
+    const { email, name, amount, category, date, description } = req.body;
+
+    const cleanEmail = String(email || "").toLowerCase().trim();
+    if (!cleanEmail) return res.status(400).json({ success: false, message: "Email required." });
+
+    if (!name || amount === undefined || !category) {
+      return res.status(400).json({ success: false, message: "Missing fields." });
+    }
+
+    const expense = await Expense.create({
+      userEmail: cleanEmail,
+      name: String(name).trim(),
+      amount: Number(amount),
+      category,
+      date: date ? new Date(date) : new Date(),
+      description: String(description || "Scanned receipt").trim(),
+    });
+
+    return res.status(201).json({ success: true, message: "Saved scanned expense.", expense });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e?.message || "Save failed." });
+  }
+});
+
+/* =======================
+   DELETE EXPENSE
+======================= */
 app.delete("/api/expenses/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -257,7 +287,6 @@ app.delete("/api/expenses/:id", async (req, res) => {
     return res.status(500).json({ success: false, message: e.message });
   }
 });
-
 
 /* =======================
    SERVER START
