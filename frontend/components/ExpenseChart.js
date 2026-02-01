@@ -1,39 +1,84 @@
-// frontend/components/ExpenseChart.js
-import React from "react";
-import { VictoryPie, VictoryBar } from "victory-native";
+// ExpenseChart.js
+import React, { useMemo } from "react";
 import { View } from "react-native";
-import colors from "../theme/colors";
+import { VictoryPie, VictoryBar } from "victory-native";
+import { useThemeApp } from "../theme/ThemeContext";
 
-const categoryColors = {
-  food: colors.success,
-  groceries: colors.warning,
-  shopping: colors.danger,
-  // Add more mappings if needed
-};
+export default function ExpenseChart({ type = "pie", data = [] }) {
+  const { colors } = useThemeApp();
 
-export default function ExpenseChart({ type, data }) {
+  const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+
+  const categoryColors = useMemo(
+    () => ({
+      food: colors.success || colors.primary,
+      groceries: colors.warning || colors.primary,
+      shopping: colors.danger || colors.primary,
+      clothing: colors.primary,
+      travel: colors.primary,
+      medical: colors.danger || colors.primary,
+      other: colors.muted,
+    }),
+    [colors]
+  );
+
+  const labelStyle = useMemo(
+    () => ({
+      fill: colors.text,
+      fontSize: 12,
+      fontWeight: "700",
+    }),
+    [colors.text]
+  );
+
   if (type === "pie") {
+    const colorScale = [
+      colors.success || colors.primary,
+      colors.warning || colors.primary,
+      colors.danger || colors.primary,
+      colors.primary,
+      colors.muted,
+    ].filter(Boolean);
+
     return (
-      <VictoryPie
-        data={data}
-        x="category"
-        y="amount"
-        colorScale={[colors.success, colors.warning, colors.danger]}
-        labels={({ datum }) => `${datum.category}: ${datum.amount}`}
-      />
+      <View>
+        <VictoryPie
+          data={safeData}
+          x="category"
+          y="amount"
+          colorScale={colorScale}
+          labels={({ datum }) => `${datum.category}: ${datum.amount}`}
+          style={{
+            labels: labelStyle,
+            data: {
+              stroke: colors.card, // separator lines look good in both themes
+              strokeWidth: 2,
+            },
+          }}
+          padding={{ top: 24, bottom: 24, left: 24, right: 24 }}
+        />
+      </View>
     );
   }
 
   return (
-    <VictoryBar
-      data={data}
-      x="category"
-      y="amount"
-      style={{
-        data: {
-          fill: ({ datum }) => categoryColors[datum.category] || colors.primary,
-        },
-      }}
-    />
+    <View>
+      <VictoryBar
+        data={safeData}
+        x="category"
+        y="amount"
+        style={{
+          data: {
+            fill: ({ datum }) =>
+              categoryColors[String(datum?.category || "other").toLowerCase()] ||
+              colors.primary,
+          },
+          labels: labelStyle,
+        }}
+        labels={({ datum }) => `${datum.amount}`}
+        domainPadding={{ x: 16, y: 10 }}
+        padding={{ top: 18, bottom: 42, left: 48, right: 18 }}
+      />
+    </View>
   );
 }

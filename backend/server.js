@@ -9,6 +9,7 @@ import bcrypt from "bcryptjs";
 
 import receiptRouter from "./routes/receipt.js";
 import userRouter from "./routes/user.js";
+import { sendMail } from "./utils/mailer.js";
 
 const app = express();
 
@@ -16,7 +17,7 @@ const app = express();
    MIDDLEWARE
 ======================= */
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "10mb" })); // increased slightly for safety
+app.use(express.json({ limit: "10mb" }));
 app.use("/api/receipt", receiptRouter);
 app.use("/api/user", userRouter);
 
@@ -47,7 +48,7 @@ const userSchema = new mongoose.Schema(
     },
     password: { type: String, required: true },
     income: { type: Number, default: 0 },
-    photoUrl: { type: String, default: "" }, // base64 data url
+    photoUrl: { type: String, default: "" },
   },
   { timestamps: true }
 );
@@ -56,13 +57,7 @@ const User = mongoose.models.User || mongoose.model("User", userSchema);
 
 const expenseSchema = new mongoose.Schema(
   {
-    userEmail: {
-      type: String,
-      required: true,
-      lowercase: true,
-      trim: true,
-      index: true,
-    },
+    userEmail: { type: String, required: true, lowercase: true, trim: true, index: true },
     name: { type: String, required: true, trim: true },
     amount: { type: Number, required: true, min: 0 },
     category: {
@@ -147,7 +142,7 @@ app.post("/api/login", async (req, res) => {
 });
 
 /* =======================
-   USER DATA (Dashboard)
+   USER DATA
 ======================= */
 app.get("/api/user/data", async (req, res) => {
   try {
@@ -208,7 +203,7 @@ app.post("/api/user/profile", async (req, res) => {
 });
 
 /* =======================
-   ADD EXPENSE (Manual)
+   ADD EXPENSE
 ======================= */
 app.post("/api/expenses", async (req, res) => {
   try {
@@ -235,8 +230,7 @@ app.post("/api/expenses", async (req, res) => {
 });
 
 /* =======================
-   ✅ SAVE SCANNED RECEIPT (FAST ENDPOINT)
-   Use this from mobile after ML Kit extracts data.
+   ✅ SAVE SCANNED RECEIPT (FAST)
 ======================= */
 app.post("/api/receipt/save", async (req, res) => {
   try {
@@ -265,6 +259,116 @@ app.post("/api/receipt/save", async (req, res) => {
 });
 
 /* =======================
+   ✅ SEND INSIGHTS EMAIL
+   POST /api/insights/email
+   Body: { email, period: "monthly" }
+======================= */
+app.post("/api/insights/email", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const period = String(req.body?.period || "monthly");
+
+    if (!email) return res.status(400).json({ success: false, message: "Email required." });
+
+    const user = await User.findOne({ email }).lean();
+    if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+    const tx = await Expense.find({ userEmail: email }).lean();
+
+    // filter this month
+    const now = new Date();
+    const month = now.getMonth();
+    const year = now.getFullYear();
+
+    const thisMonth = tx.filter((t) => {
+      const d = new Date(t?.date);
+      return !Number.isNaN(d.getTime()) && d.getMonth() === month && d.getFullYear() === year;
+    });
+
+    const income = Number(user?.income || 0);
+    const spent = thisMonth.reduce((sum, t) => sum + Number(t?.amount || 0), 0);
+    const ratio = income > 0 ? (spent / income) * 100 : 0;
+    const savings = income > 0 ? Math.max(0, income - spent) : 0;
+
+    // category totals
+    const totals = {};
+    for (const t of thisMonth) {
+      const c = String(t?.category || "other");
+      totals[c] = (totals[c] || 0) + Number(t?.amount || 0);
+    }
+
+    const topCats = Object.entries(totals)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    let status = "No Income Set";
+    let tip = "Set your income in Profile to get personalized insights.";
+    if (income > 0) {
+      if (ratio >= 100) {
+        status = "Overspent";
+        tip = "You spent more than your income. Reduce high-cost categories and set limits.";
+      } else if (ratio > 70) {
+        status = "High";
+        tip = "Spending is high. Reduce non-essential shopping/travel this week.";
+      } else if (ratio > 50) {
+        status = "Moderate";
+        tip = "Spending is moderate. Try saving 30% by controlling medium/high items.";
+      } else {
+        status = "Excellent";
+        tip = "Great control. Keep a savings goal and maintain the habit!";
+      }
+    }
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;line-height:1.5">
+        <h2>Monthly Insights Summary</h2>
+        <p><b>User:</b> ${user.username || "User"} (${email})</p>
+        <p><b>Period:</b> ${period}</p>
+
+        <hr/>
+
+        <h3>Income vs Expenses</h3>
+        <ul>
+          <li><b>Income:</b> ₹${income.toFixed(2)}</li>
+          <li><b>Spent (this month):</b> ₹${spent.toFixed(2)}</li>
+          <li><b>Usage:</b> ${ratio.toFixed(1)}%</li>
+          <li><b>Savings left:</b> ₹${savings.toFixed(2)}</li>
+          <li><b>Status:</b> ${status}</li>
+        </ul>
+
+        <h3>Top Categories</h3>
+        ${
+          topCats.length
+            ? `<ul>${topCats
+                .map(([c, v]) => `<li><b>${c}</b>: ₹${Number(v).toFixed(2)}</li>`)
+                .join("")}</ul>`
+            : `<p>No expenses logged this month.</p>`
+        }
+
+        <h3>Suggestion</h3>
+        <p>${tip}</p>
+
+        <p style="color:#666;font-size:12px;margin-top:20px">
+          Sent from AI Expense Tracker
+        </p>
+      </div>
+    `;
+
+    await sendMail({
+      to: email,
+      subject: "Your Monthly Expense Insights",
+      html,
+      text: `Income: ${income} | Spent: ${spent} | Usage: ${ratio.toFixed(1)}% | Savings: ${savings}`,
+    });
+
+    return res.json({ success: true, message: "Insights email sent successfully ✅" });
+  } catch (e) {
+    console.log("insights email error:", e);
+    return res.status(500).json({ success: false, message: e?.message || "Email failed." });
+  }
+});
+
+/* =======================
    DELETE EXPENSE
 ======================= */
 app.delete("/api/expenses/:id", async (req, res) => {
@@ -272,15 +376,10 @@ app.delete("/api/expenses/:id", async (req, res) => {
     const { id } = req.params;
     const email = String(req.query.email || "").toLowerCase().trim();
 
-    if (!email) {
-      return res.status(400).json({ success: false, message: "Email required" });
-    }
+    if (!email) return res.status(400).json({ success: false, message: "Email required" });
 
     const deleted = await Expense.findOneAndDelete({ _id: id, userEmail: email });
-
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: "Expense not found" });
-    }
+    if (!deleted) return res.status(404).json({ success: false, message: "Expense not found" });
 
     return res.json({ success: true, message: "Deleted", deletedId: id });
   } catch (e) {

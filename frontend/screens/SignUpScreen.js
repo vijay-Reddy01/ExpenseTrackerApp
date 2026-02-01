@@ -1,105 +1,180 @@
 import React, { useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from "react-native";
+import {
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  View,
+} from "react-native";
 import { api } from "../utils/api";
-import colors from "../theme/colors";
+import { useThemeApp } from "../theme/ThemeContext";
 
 export default function SignUpScreen({ navigation, onLogin }) {
+  const { colors, isDark } = useThemeApp();
+  const styles = makeStyles(colors, isDark);
+
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const handleSignup = async () => {
     try {
-      if (!username.trim()) {
-        Alert.alert("Validation", "Enter your name.");
-        return;
-      }
-      if (!email || !email.includes("@")) {
-        Alert.alert("Validation", "Enter a valid email.");
-        return;
-      }
-      if (!password || password.length < 3) {
-        Alert.alert("Validation", "Password must be at least 3 characters.");
-        return;
-      }
+      const u = username.trim();
+      const e = email.trim();
+
+      if (!u) return Alert.alert("Validation", "Enter your name.");
+      if (!e || !e.includes("@")) return Alert.alert("Validation", "Enter a valid email.");
+      if (!password || password.length < 3)
+        return Alert.alert("Validation", "Password must be at least 3 characters.");
+
+      setLoading(true);
 
       const res = await api.signup({
-        username: username.trim(),
-        email: email.trim(),
+        username: u,
+        email: e,
         password,
       });
 
       if (res?.success && res?.user?.email) {
-        onLogin(res.user); // ✅ App.js will switch to Tabs
+        onLogin?.(res.user);
         return;
       }
 
       Alert.alert("Signup failed", res?.message || "Could not create account");
     } catch (err) {
-      Alert.alert("Error", err.message || "Signup failed");
+      Alert.alert("Error", err?.message || "Signup failed");
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Create Account</Text>
-      <Text style={styles.subtitle}>Start tracking your expenses today</Text>
+    <KeyboardAvoidingView style={styles.safe} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
 
-      <TextInput
-        style={styles.input}
-        placeholder="Full Name"
-        value={username}
-        onChangeText={setUsername}
-      />
+        {/* ✅ APP TITLE */}
+        <Text style={styles.appTitle}>Welcome to AiExpenseTracker</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email Address"
-        value={email}
-        onChangeText={setEmail}
-        keyboardType="email-address"
-        autoCapitalize="none"
-      />
+        <View style={styles.card}>
+          <Text style={styles.title}>Create Account</Text>
+          <Text style={styles.subtitle}>Start tracking your expenses today</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Password"
-        secureTextEntry
-        value={password}
-        onChangeText={setPassword}
-      />
+          <Text style={styles.label}>Full Name</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Full name"
+            placeholderTextColor={colors.muted}
+            value={username}
+            onChangeText={setUsername}
+          />
 
-      {/* ✅ FIXED: correct function name */}
-      <TouchableOpacity style={styles.button} onPress={handleSignup}>
-        <Text style={styles.buttonText}>Sign Up</Text>
-      </TouchableOpacity>
+          <Text style={styles.label}>Email</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Email address"
+            placeholderTextColor={colors.muted}
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+          />
 
-      <TouchableOpacity onPress={() => navigation.navigate("Login")}>
-        <Text style={styles.link}>
-          Already have an account? <Text style={styles.linkHighlight}>Log In</Text>
-        </Text>
-      </TouchableOpacity>
-    </View>
+          <Text style={styles.label}>Password</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Password"
+            placeholderTextColor={colors.muted}
+            secureTextEntry
+            value={password}
+            onChangeText={setPassword}
+          />
+
+          <TouchableOpacity
+            style={[styles.button, loading && styles.buttonDisabled]}
+            onPress={handleSignup}
+            activeOpacity={0.9}
+            disabled={loading}
+          >
+            <Text style={styles.buttonText}>{loading ? "Creating..." : "Sign Up"}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={() => navigation.navigate("Login")} style={styles.linkWrap}>
+            <Text style={styles.link}>
+              Already have an account? <Text style={styles.linkHighlight}>Log In</Text>
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20, backgroundColor: colors.background },
-  title: { fontSize: 28, fontWeight: "bold", color: colors.text, marginBottom: 10 },
-  subtitle: { fontSize: 16, color: colors.muted, marginBottom: 30 },
-  input: {
-    width: "100%",
-    backgroundColor: colors.card,
-    paddingVertical: 15,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    fontSize: 16,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  button: { width: "100%", backgroundColor: colors.primary, paddingVertical: 18, borderRadius: 12, alignItems: "center", marginTop: 10 },
-  buttonText: { color: "#FFFFFF", fontSize: 18, fontWeight: "600" },
-  link: { marginTop: 20, color: colors.muted, fontSize: 14 },
-  linkHighlight: { color: colors.primary, fontWeight: "600" },
-});
+const makeStyles = (colors, isDark) =>
+  StyleSheet.create({
+    safe: { flex: 1, backgroundColor: colors.background },
+
+    container: {
+      flexGrow: 1,
+      justifyContent: "center",
+      padding: 20,
+    },
+
+    /* ✅ CENTER TITLE */
+    appTitle: {
+      textAlign: "center",
+      fontSize: 26,
+      fontWeight: "900",
+      color: colors.primary,
+      marginBottom: 24,
+    },
+
+    card: {
+      backgroundColor: colors.card,
+      borderRadius: 22,
+      padding: 22,
+      borderWidth: 1,
+      borderColor: colors.border,
+      shadowColor: "#000",
+      shadowOpacity: isDark ? 0.25 : 0.1,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 4,
+    },
+
+    title: { fontSize: 22, fontWeight: "900", color: colors.text },
+    subtitle: { marginTop: 4, marginBottom: 18, color: colors.muted },
+
+    label: { marginTop: 12, marginBottom: 6, color: colors.muted, fontWeight: "800" },
+
+    input: {
+      backgroundColor: colors.background,
+      borderRadius: 12,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      color: colors.text,
+    },
+
+    button: {
+      marginTop: 20,
+      backgroundColor: colors.primary,
+      borderRadius: 14,
+      paddingVertical: 14,
+      alignItems: "center",
+    },
+
+    buttonDisabled: { opacity: 0.7 },
+
+    buttonText: { color: "#fff", fontWeight: "900", fontSize: 16 },
+
+    linkWrap: { marginTop: 18, alignItems: "center" },
+
+    link: { color: colors.muted },
+
+    linkHighlight: { color: colors.primary, fontWeight: "900" },
+  });

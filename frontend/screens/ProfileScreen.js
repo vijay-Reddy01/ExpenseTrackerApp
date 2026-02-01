@@ -1,181 +1,267 @@
-import React, { useState } from "react";
+// screens/ProfileScreen.js
+import React, { useMemo } from "react";
 import {
   View,
   Text,
-  TouchableOpacity,
   StyleSheet,
-  ScrollView,
-  Modal,
-  TextInput,
+  TouchableOpacity,
+  Image,
   Alert,
+  ScrollView,
+  Platform
 } from "react-native";
-import { api } from "../utils/api";
-import colors from "../theme/colors";
+import * as ImagePicker from "expo-image-picker";
+import { useThemeApp } from "../theme/ThemeContext";
 
-// This is the new dedicated Profile Screen
-export default function ProfileScreen({ onLogout, user, onProfileUpdate }) {
-  const [modalVisible, setModalVisible] = useState(false);
-  const [newIncome, setNewIncome] = useState("");
-  const [newUsername, setNewUsername] = useState("");
+export default function ProfileScreen({ navigation, user, onLogout, onProfileUpdate }) {
+  const { toggleTheme, mode, colors } = useThemeApp();
+  const styles = makeStyles(colors);
 
-  const handleUpdateProfile = async () => {
-    if (!newUsername.trim()) {
-      Alert.alert("Missing Fields", "Please provide a username.");
-      return;
-    }
-    if (newIncome === "" || isNaN(Number(newIncome))) {
-      Alert.alert("Invalid Salary", "Please enter a valid monthly salary number.");
-      return;
-    }
+  const profile = useMemo(() => {
+    return {
+      name: user?.username || "User",
+      email: user?.email || "",
+      income: Number(user?.income || 0),
+      photoUrl: user?.photoUrl || "",
+    };
+  }, [user?.username, user?.email, user?.income, user?.photoUrl]);
 
+  const logout = () => {
+  if (Platform.OS === "web") {
+    const ok = window.confirm("Logout?");
+    if (ok) onLogout?.();
+    return;
+  }
+
+  Alert.alert("Logout?", "Are you sure?", [
+    { text: "Cancel", style: "cancel" },
+    { text: "Logout", style: "destructive", onPress: () => onLogout?.() },
+  ]);
+};
+
+
+  // ✅ Pick photo as BASE64 and go to EditProfile
+  // (EditProfile will save to DB on Save)
+  const pickImageAndGoEdit = async () => {
     try {
-      const res = await api.updateProfile({
-        email: user.email,
-        username: newUsername.trim(),
-        income: Number(newIncome),
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission needed", "Gallery permission is required.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+        base64: true, // ✅ IMPORTANT
       });
 
-      if (res.success) {
-        Alert.alert("Success", "Your profile has been updated.");
-        setModalVisible(false);
-        if (onProfileUpdate) onProfileUpdate(); // Trigger data refresh in App.js
-      } else {
-        Alert.alert("Error", res.message || "Failed to update profile.");
+      if (result.canceled) return;
+
+      const asset = result.assets?.[0];
+      if (!asset?.base64) {
+        Alert.alert("Photo", "Could not read image data. Try again.");
+        return;
       }
-    } catch (err) {
-      Alert.alert("Error", err.message || "An unexpected error occurred.");
+
+      // ✅ Data URL works on web + mobile and can be stored in MongoDB
+      const dataUrl = `data:image/jpeg;base64,${asset.base64}`;
+
+      navigation.navigate("EditProfile", {
+        user: { ...user, photoUrl: dataUrl },
+        onProfileUpdate,
+      });
+    } catch (e) {
+      Alert.alert("Photo", e?.message || "Could not pick photo");
     }
   };
 
-  // Simplified menu for the profile page itself
-  const menuItems = [
-    {
-      id: "edit-profile",
-      title: "Edit Profile",
-      icon: "👤",
-      onPress: () => {
-        setNewUsername(user?.username || "");
-        setNewIncome(user?.income > 0 ? user.income.toString() : "");
-        setModalVisible(true);
-      },
-    },
-    { id: "notifications", title: "Notifications", icon: "🔔" },
-    { id: "help-support", title: "Help & Support", icon: "❓" },
-  ];
+  const goEditProfile = () => {
+    navigation.navigate("EditProfile", {
+      user,
+      onProfileUpdate,
+    });
+  };
 
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.profileHeader}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{user?.username?.[0]?.toUpperCase() || "U"}</Text>
-        </View>
-        <Text style={styles.username}>{user?.username || "User"}</Text>
-        <Text style={styles.email}>{user?.email || "email@example.com"}</Text>
-      </View>
-
-      {menuItems.map((item) => (
-        <TouchableOpacity key={item.id} style={styles.menuItem} onPress={item.onPress}>
-          <Text style={styles.menuIcon}>{item.icon}</Text>
-          <Text style={styles.menuText}>{item.title}</Text>
-          <Text style={styles.menuArrow}>›</Text>
-        </TouchableOpacity>
-      ))}
-
-      <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
-        <Text style={styles.logoutButtonText}>Log Out</Text>
+    <ScrollView contentContainerStyle={styles.container}>
+      {/* Theme toggle */}
+      <TouchableOpacity
+        onPress={toggleTheme}
+        activeOpacity={0.85}
+        style={[
+          styles.themeToggleBtn,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={{ fontSize: 18 }}>{mode === "dark" ? "🌙" : "☀️"}</Text>
       </TouchableOpacity>
 
-      <Modal
-        animationType="slide"
-        transparent
-        visible={modalVisible}
-        onRequestClose={() => setModalVisible(false)}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Update Profile</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Username"
-              value={newUsername}
-              onChangeText={setNewUsername}
-            />
-            <TextInput
-              style={styles.input}
-              placeholder="Monthly Salary"
-              keyboardType="numeric"
-              value={newIncome}
-              onChangeText={setNewIncome}
-            />
-            <TouchableOpacity style={styles.saveButton} onPress={handleUpdateProfile}>
-              <Text style={styles.saveButtonText}>Save</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelButton} onPress={() => setModalVisible(false)}>
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
+      <View style={styles.header}>
+        {profile.photoUrl ? (
+          <Image source={{ uri: profile.photoUrl }} style={styles.avatar} />
+        ) : (
+          <View style={styles.avatarFallback}>
+            <Text style={styles.avatarLetter}>
+              {(profile.name?.[0] || "U").toUpperCase()}
+            </Text>
           </View>
+        )}
+
+        <Text style={styles.name}>{profile.name}</Text>
+        <Text style={styles.email}>{profile.email}</Text>
+
+        <View style={styles.incomePill}>
+          <Text style={styles.incomeText}>Monthly Income: ₹{profile.income}</Text>
         </View>
-      </Modal>
+
+        <TouchableOpacity style={styles.photoBtn} onPress={pickImageAndGoEdit} activeOpacity={0.9}>
+          <Text style={styles.photoText}>Change Photo</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.card}>
+        <MenuItem icon="👤" title="Edit Profile" onPress={goEditProfile} colors={colors} />
+
+        <MenuItem
+          icon="🔔"
+          title="Notifications"
+          onPress={() => navigation.navigate("Notifications")}
+          colors={colors}
+        />
+
+        <MenuItem
+          icon="❓"
+          title="Help & Support"
+          onPress={() => navigation.navigate("HelpSupport")}
+          colors={colors}
+        />
+
+        <TouchableOpacity style={styles.logoutBtn} onPress={logout} activeOpacity={0.9}>
+  <Text style={styles.logoutText}>Log Out</Text>
+</TouchableOpacity>
+
+
+        <Text style={styles.themeHint}>
+          Current theme: {mode === "dark" ? "Dark" : "Light"}
+        </Text>
+      </View>
     </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background, padding: 20 },
-  profileHeader: { alignItems: "center", marginBottom: 30 },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: colors.primary,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 15,
-  },
-  avatarText: { fontSize: 32, color: "#FFFFFF", fontWeight: "bold" },
-  username: { fontSize: 22, fontWeight: "bold", color: colors.text },
-  email: { fontSize: 16, color: colors.muted },
+function MenuItem({ icon, title, onPress, colors }) {
+  const s = itemStyles(colors);
+  return (
+    <TouchableOpacity style={s.menuItem} onPress={onPress} activeOpacity={0.85}>
+      <Text style={s.menuIcon}>{icon}</Text>
+      <Text style={s.menuTitle}>{title}</Text>
+      <Text style={s.chevron}>›</Text>
+    </TouchableOpacity>
+  );
+}
 
-  menuItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 10,
-  },
-  menuIcon: { fontSize: 20, marginRight: 15 },
-  menuText: { fontSize: 16, color: colors.text, flex: 1 },
-  menuArrow: { fontSize: 20, color: colors.muted },
+const itemStyles = (colors) =>
+  StyleSheet.create({
+    menuItem: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingVertical: 14,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    menuIcon: { fontSize: 18, width: 34 },
+    menuTitle: { flex: 1, fontWeight: "800", color: colors.text },
+    chevron: { fontSize: 22, color: colors.muted },
+  });
 
-  logoutButton: {
-    backgroundColor: "#F87171",
-    borderRadius: 12,
-    paddingVertical: 18,
-    alignItems: "center",
-    marginTop: 20,
-  },
-  logoutButtonText: { fontSize: 18, fontWeight: "600", color: "#FFFFFF" },
+const makeStyles = (colors) =>
+  StyleSheet.create({
+    container: {
+      padding: 16,
+      flexGrow: 1,
+      backgroundColor: colors.background,
+      paddingBottom: 110,
+    },
 
-  modalContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-  },
-  modalContent: { backgroundColor: colors.card, borderRadius: 12, padding: 20, width: "80%", alignItems: "center" },
-  modalTitle: { fontSize: 20, fontWeight: "bold", marginBottom: 20 },
+    themeToggleBtn: {
+      position: "absolute",
+      top: 16,
+      right: 16,
+      zIndex: 99,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+    },
 
-  input: {
-    width: "100%",
-    backgroundColor: colors.background,
-    padding: 15,
-    borderRadius: 8,
-    fontSize: 16,
-    marginBottom: 20,
-  },
-  saveButton: { backgroundColor: colors.primary, padding: 15, borderRadius: 8, width: "100%", alignItems: "center" },
-  saveButtonText: { color: "#FFFFFF", fontWeight: "bold" },
-  cancelButton: { marginTop: 10, padding: 10 },
-  cancelButtonText: { color: colors.muted },
-});
+    header: { alignItems: "center", marginTop: 40, marginBottom: 16 },
+
+    avatar: { width: 90, height: 90, borderRadius: 45, marginBottom: 10 },
+
+    avatarFallback: {
+      width: 90,
+      height: 90,
+      borderRadius: 45,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 10,
+      backgroundColor: colors.primary,
+    },
+
+    avatarLetter: { color: "#fff", fontSize: 36, fontWeight: "900" },
+
+    name: { fontSize: 20, fontWeight: "900", color: colors.text },
+    email: { marginTop: 3, color: colors.muted },
+
+    incomePill: {
+      marginTop: 10,
+      backgroundColor: colors.card,
+      borderWidth: 1,
+      borderColor: colors.border,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      borderRadius: 999,
+    },
+
+    incomeText: { color: colors.text, fontWeight: "900" },
+
+    photoBtn: {
+      marginTop: 12,
+      backgroundColor: colors.primary,
+      paddingVertical: 12,
+      paddingHorizontal: 18,
+      borderRadius: 14,
+    },
+
+    photoText: { color: "#fff", fontWeight: "900" },
+
+    card: {
+      backgroundColor: colors.card,
+      borderRadius: 16,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+
+    logoutBtn: {
+      marginTop: 14,
+      backgroundColor: "#F87171",
+      borderRadius: 14,
+      paddingVertical: 14,
+      alignItems: "center",
+    },
+
+    logoutText: { color: "#fff", fontWeight: "900" },
+
+    themeHint: {
+      marginTop: 10,
+      textAlign: "center",
+      color: colors.muted,
+      fontWeight: "700",
+      fontSize: 12,
+    },
+  });
