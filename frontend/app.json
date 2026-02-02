@@ -1,5 +1,6 @@
 {
   "expo": {
+    "newArchEnabled": false,
     "name": "AI Expense Tracker",
     "slug": "ai-expense-tracker",
     "version": "1.0.0",
@@ -15,10 +16,13 @@
     },
     "android": {
       "package": "com.vijaychalla.aiexpensetracker",
-      "permissions":["INTERNET"]
+      "permissions": [
+        "INTERNET"
+      ]
     },
     "plugins": [
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "owner": "vijay_challa123"
   }
 }
