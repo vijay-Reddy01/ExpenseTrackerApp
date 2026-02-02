@@ -310,114 +310,132 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
         return null;
       };
 
-      const parseDebitTransactionsFromText = (rawText) => {
-        if (!rawText) return [];
+const parseDebitTransactionsFromText = (rawText) => {
+  if (!rawText) return [];
 
-        const text = normalizeDigits(String(rawText || ""))
-          .replace(/\u00A0/g, " ")
-          .replace(/[|]+/g, " ")
-          .replace(/\t+/g, " ")
-          .replace(/ +/g, " ");
+  const text = normalizeDigits(String(rawText || ""))
+    .replace(/\u00A0/g, " ")
+    .replace(/[|]+/g, " ")
+    .replace(/\t+/g, " ")
+    .replace(/ +/g, " ");
 
-        const lines = text
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter(Boolean);
+  // ✅ Split by transaction date occurrences (DD-MM-YYYY or DD/MM/YYYY)
+  const dateRe = /\b([0-3]\d)[\/\-]([0-1]\d)[\/\-](20\d{2})\b/g;
 
-        const tx = [];
-        const seen = new Set();
+  // Find all date positions
+  const positions = [];
+  let m;
+  while ((m = dateRe.exec(text)) !== null) {
+    positions.push({ idx: m.index, date: `${m[3]}-${m[2]}-${m[1]}` });
+  }
 
-        const toNumber = (s) => {
-          const n = Number(String(s).replace(/[₹,\s]/g, ""));
-          return Number.isFinite(n) ? n : NaN;
-        };
+  // If no date rows found, return empty
+  if (positions.length === 0) return [];
 
-        const shouldSkipLine = (low) => {
-          if (low.includes("sample bank")) return true;
-          if (low.includes("account holder")) return true;
-          if (low.includes("account number")) return true;
-          if (low.includes("statement date")) return true;
-          if (low.includes("this is a system")) return true;
-          if (low.includes("date description")) return true;
-          if (low.includes("debit")) return true;
-          if (low.includes("credit")) return true;
-          if (low.includes("balance")) return true;
-          return false;
-        };
+  // Cut into chunks for each date row
+  const chunks = [];
+  for (let i = 0; i < positions.length; i++) {
+    const start = positions[i].idx;
+    const end = i + 1 < positions.length ? positions[i + 1].idx : text.length;
+    chunks.push({ date: positions[i].date, row: text.slice(start, end).trim() });
+  }
 
-        const creditKeywords = [
-          "salary",
-          "credit",
-          " cr ",
-          "refund",
-          "reversal",
-          "cashback",
-          "interest",
-          "freelance payment",
-          "payment received",
-          "received",
-          "deposit",
-        ];
+  const tx = [];
+  const seen = new Set();
 
-        for (const line of lines) {
-          const low = line.toLowerCase();
-          if (shouldSkipLine(low)) continue;
+  const shouldSkipRow = (low) => {
+    if (low.includes("statement date")) return true;
+    if (low.includes("account holder")) return true;
+    if (low.includes("account number")) return true;
+    if (low.includes("opening balance") && !low.includes("upi") && !low.includes("atm")) return true;
+    if (low.includes("date description")) return true;
+    return false;
+  };
 
-          const isoDate = lineDateISO(line);
-          if (!isoDate) continue;
+  const creditKeywords = [
+    "salary",
+    "credit",
+    " cr ",
+    "refund",
+    "reversal",
+    "cashback",
+    "interest",
+    "freelance payment",
+    "payment received",
+    "received",
+    "deposit",
+  ];
 
-          const matches = line.match(moneyRegex) || [];
-          if (matches.length < 2) continue;
+  // amounts in a chunk
+  const moneyRe = /\b\d+(?:\.\d{1,2})?\b/g;
 
-          // description is everything before first amount token
-          const firstAmtStr = matches[0];
-          const firstAmtIndex = firstAmtStr ? line.indexOf(firstAmtStr) : -1;
-          if (firstAmtIndex === -1) continue;
+  const toNumber = (s) => {
+    const n = Number(String(s).replace(/[₹,\s]/g, ""));
+    return Number.isFinite(n) ? n : NaN;
+  };
 
-          let desc = line.slice(0, firstAmtIndex).trim();
+  for (const c of chunks) {
+    const row = c.row;
+    const low = row.toLowerCase();
+    if (shouldSkipRow(low)) continue;
 
-          // remove dates from desc
-          desc = desc
-            .replace(/\b([0-3]?\d)[\/\-]([0-1]?\d)[\/\-](20\d{2})\b/g, " ")
-            .replace(/\b(20\d{2})[\/\-](0?\d|1[0-2])[\/\-]([0-2]?\d|3[01])\b/g, " ")
-            .replace(/ +/g, " ")
-            .trim();
+    // skip credit rows
+    if (creditKeywords.some((k) => low.includes(k))) continue;
 
-          if (desc.toLowerCase().includes("opening balance")) continue;
+    const amounts = row.match(moneyRe) || [];
 
-          let debit = NaN;
+    // In table rows, usually we will have at least:
+    // debit + balance  => 2 numbers
+    // debit + credit + balance => 3 numbers
+    // Sometimes OCR adds account number etc; we must filter unrealistic big values
+    const nums = amounts
+      .map(toNumber)
+      .filter((n) => Number.isFinite(n) && n > 0 && n < 10000000);
 
-          if (matches.length >= 3) {
-            // table usually gives: debit, credit, balance
-            debit = toNumber(matches[0]);
-          } else {
-            // 2 numbers => (debit, balance) OR (credit, balance)
-            const isLikelyCredit = creditKeywords.some((k) => low.includes(k));
-            if (isLikelyCredit) continue;
-            debit = toNumber(matches[0]);
-          }
+    if (nums.length < 2) continue;
 
-          if (!Number.isFinite(debit) || debit <= 0) continue;
+    // ✅ debit is the FIRST amount after the date/description
+    // balance is usually the last number (ignore it)
+    const debit = nums[0];
+    if (!Number.isFinite(debit) || debit <= 0) continue;
 
-          desc = desc.replace(/[-–—]+$/g, "").trim();
-          if (!desc) desc = "Expense";
+    // ✅ description: remove date and numbers
+    let desc = row;
 
-          const item = {
-            name: desc,
-            amount: Number(debit),
-            date: isoDate,
-            category: detectCategory(desc),
-          };
+    // remove first date token
+    desc = desc.replace(dateRe, " ");
 
-          const key = `${item.date}__${item.amount}__${item.name}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
+    // remove all numbers
+    desc = desc.replace(moneyRe, " ");
 
-          tx.push(item);
-        }
+    // cleanup tokens
+    desc = desc
+      .replace(/\b(debit|credit|dr|cr|balance)\b/gi, " ")
+      .replace(/ +/g, " ")
+      .trim();
 
-        return tx;
-      };
+    if (!desc || desc.length < 3) desc = "Expense";
+
+    const item = {
+      name: desc,
+      amount: debit,
+      date: new Date(`${c.date}T00:00:00.000Z`).toISOString(),
+      category: detectCategory(desc),
+    };
+
+    const key = `${item.date}__${item.amount}__${item.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // Also skip "Opening Balance" if it slips through
+    if (item.name.toLowerCase().includes("opening balance")) continue;
+
+    tx.push(item);
+  }
+
+  return tx;
+};
+
 
       // ✅ OCR all pages and combine
       let combinedText = "";
