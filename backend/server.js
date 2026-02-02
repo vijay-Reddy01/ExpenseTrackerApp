@@ -8,7 +8,6 @@ import cors from "cors";
 import bcrypt from "bcryptjs";
 
 import receiptRouter from "./routes/receipt.js";
-import userRouter from "./routes/user.js";
 import { sendMail } from "./utils/mailer.js";
 
 const app = express();
@@ -18,8 +17,7 @@ const app = express();
 ======================= */
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
-app.use("/api/receipt", receiptRouter);
-app.use("/api/user", userRouter);
+app.use("/api/receipt", receiptRouter); // ✅ receipt routes only
 
 /* =======================
    DATABASE
@@ -52,7 +50,6 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 
 const expenseSchema = new mongoose.Schema(
@@ -71,7 +68,6 @@ const expenseSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
 const Expense = mongoose.models.Expense || mongoose.model("Expense", expenseSchema);
 
 /* =======================
@@ -178,12 +174,8 @@ app.post("/api/user/profile", async (req, res) => {
     if (Number.isNaN(incomeNum) || incomeNum < 0) {
       return res.status(400).json({ success: false, message: "Income must be a valid number." });
     }
-
     if (photoUrl.length > 2_000_000) {
-      return res.status(400).json({
-        success: false,
-        message: "Photo too large. Choose a smaller image.",
-      });
+      return res.status(400).json({ success: false, message: "Photo too large." });
     }
 
     const updated = await User.findOneAndUpdate(
@@ -230,7 +222,7 @@ app.post("/api/expenses", async (req, res) => {
 });
 
 /* =======================
-   ✅ SAVE SCANNED RECEIPT (FAST)
+   ✅ SAVE SCANNED RECEIPT
 ======================= */
 app.post("/api/receipt/save", async (req, res) => {
   try {
@@ -260,8 +252,6 @@ app.post("/api/receipt/save", async (req, res) => {
 
 /* =======================
    ✅ SEND INSIGHTS EMAIL
-   POST /api/insights/email
-   Body: { email, period: "monthly" }
 ======================= */
 app.post("/api/insights/email", async (req, res) => {
   try {
@@ -275,7 +265,6 @@ app.post("/api/insights/email", async (req, res) => {
 
     const tx = await Expense.find({ userEmail: email }).lean();
 
-    // filter this month
     const now = new Date();
     const month = now.getMonth();
     const year = now.getFullYear();
@@ -290,16 +279,12 @@ app.post("/api/insights/email", async (req, res) => {
     const ratio = income > 0 ? (spent / income) * 100 : 0;
     const savings = income > 0 ? Math.max(0, income - spent) : 0;
 
-    // category totals
     const totals = {};
     for (const t of thisMonth) {
       const c = String(t?.category || "other");
       totals[c] = (totals[c] || 0) + Number(t?.amount || 0);
     }
-
-    const topCats = Object.entries(totals)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3);
+    const topCats = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 3);
 
     let status = "No Income Set";
     let tip = "Set your income in Profile to get personalized insights.";
@@ -324,9 +309,7 @@ app.post("/api/insights/email", async (req, res) => {
         <h2>Monthly Insights Summary</h2>
         <p><b>User:</b> ${user.username || "User"} (${email})</p>
         <p><b>Period:</b> ${period}</p>
-
         <hr/>
-
         <h3>Income vs Expenses</h3>
         <ul>
           <li><b>Income:</b> ₹${income.toFixed(2)}</li>
@@ -335,7 +318,6 @@ app.post("/api/insights/email", async (req, res) => {
           <li><b>Savings left:</b> ₹${savings.toFixed(2)}</li>
           <li><b>Status:</b> ${status}</li>
         </ul>
-
         <h3>Top Categories</h3>
         ${
           topCats.length
@@ -344,13 +326,9 @@ app.post("/api/insights/email", async (req, res) => {
                 .join("")}</ul>`
             : `<p>No expenses logged this month.</p>`
         }
-
         <h3>Suggestion</h3>
         <p>${tip}</p>
-
-        <p style="color:#666;font-size:12px;margin-top:20px">
-          Sent from AI Expense Tracker
-        </p>
+        <p style="color:#666;font-size:12px;margin-top:20px">Sent from AI Expense Tracker</p>
       </div>
     `;
 
@@ -375,7 +353,6 @@ app.delete("/api/expenses/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const email = String(req.query.email || "").toLowerCase().trim();
-
     if (!email) return res.status(400).json({ success: false, message: "Email required" });
 
     const deleted = await Expense.findOneAndDelete({ _id: id, userEmail: email });
