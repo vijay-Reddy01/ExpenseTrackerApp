@@ -273,44 +273,208 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
     }
 
     // ✅ PDF CASE
-    if (mime === "application/pdf") {
-      let pages;
-      try {
-        pages = await pdf(req.file.buffer, { scale: 2 });
-      } catch (e) {
-        return res.status(500).json({
-          success: false,
-          message:
-            "PDF processing failed on server. Try uploading an image (JPG/PNG) instead.",
-          error: e?.message || String(e),
-        });
-      }
-
-      const extracted = [];
-      for await (const page of pages) {
-        const rawText = await ocrBuffer(page);
-
-        const item = {
-          name: extractName(rawText),
-          amount: extractAmount(rawText),
-          category: detectCategory(rawText),
-          date: extractDate(rawText),
-        };
-
-        if (item.amount || item.date || item.name) extracted.push(item);
-      }
-
-      return res.json({ success: true, type: "pdf", data: extracted });
-    }
-
-    return res.status(400).json({ success: false, message: "Unsupported file type" });
-  } catch (err) {
-    console.log("receipt scan error:", err);
+// ✅ PDF CASE
+if (mime === "application/pdf") {
+  let pages;
+  try {
+    pages = await pdf(req.file.buffer, { scale: 2 });
+  } catch (e) {
     return res.status(500).json({
       success: false,
-      message: err?.message || "Scan failed",
+      message: "PDF processing failed on server. Try uploading an image (JPG/PNG) instead.",
+      error: e?.message || String(e),
     });
   }
-});
+
+  // --- helper: parse date from a single line ---
+  const lineDateISO = (line) => {
+    // try existing helper first
+    const iso = extractDate(line);
+    if (iso) return iso;
+
+    // DD/MM/YYYY or DD-MM-YYYY
+    let m = line.match(/\b([0-3]?\d)[\/\-]([0-1]?\d)[\/\-](20\d{2})\b/);
+    if (m) {
+      const dd = String(m[1]).padStart(2, "0");
+      const mm = String(m[2]).padStart(2, "0");
+      const yyyy = m[3];
+      return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`).toISOString();
+    }
+
+    // YYYY-MM-DD
+    m = line.match(/\b(20\d{2})[\/\-](0?\d|1[0-2])[\/\-]([0-2]?\d|3[01])\b/);
+    if (m) {
+      const yyyy = m[1];
+      const mm = String(m[2]).padStart(2, "0");
+      const dd = String(m[3]).padStart(2, "0");
+      return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`).toISOString();
+    }
+
+    return null;
+  };
+
+  // --- helper: parse statement text into multiple debit transactions ---
+  const parseDebitTransactionsFromText = (rawText) => {
+    if (!rawText) return [];
+
+    const text = normalizeDigits(String(rawText || ""))
+      .replace(/\u00A0/g, " ")
+      .replace(/[|]+/g, " ")
+      .replace(/\t+/g, " ")
+      .replace(/ +/g, " ");
+
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const tx = [];
+    const seen = new Set();
+
+    // amount candidates like 1,234.50 or 1234.50 or 1234
+    const moneyRegex = /(?:₹\s*)?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\b\d+(?:\.\d{1,2})?\b/g;
+
+    const toNumber = (s) => {
+      const n = Number(String(s).replace(/[₹,\s]/g, ""));
+      return Number.isFinite(n) ? n : NaN;
+    };
+
+    const isDebitLine = (lineLower) => {
+      // Common debit markers in statements
+      // Also handle "Dr", "Debit", "Withdrawal", "UPI", "POS", etc.
+      if (lineLower.includes(" dr ") || lineLower.endsWith(" dr")) return true;
+      if (lineLower.includes("debit")) return true;
+      if (lineLower.includes("withdrawal") || lineLower.includes("wdl")) return true;
+      if (lineLower.includes("atm")) return true;
+      if (lineLower.includes("pos")) return true;
+      if (lineLower.includes("upi")) return true;
+      if (lineLower.includes("imps")) return true;
+      if (lineLower.includes("neft")) return true;
+      if (lineLower.includes("card")) return true;
+      if (lineLower.includes("purchase")) return true;
+      if (lineLower.includes("spent")) return true;
+
+      // Negative sign often implies debit
+      if (lineLower.match(/-\s*\d/)) return true;
+
+      return false;
+    };
+
+    for (const line of lines) {
+      const low = line.toLowerCase();
+
+      // must have a date in the line (statement rows usually do)
+      const isoDate = lineDateISO(line);
+      if (!isoDate) continue;
+
+      // pick numeric candidates (many lines have balance too; we use rightmost as amount)
+      const matches = line.match(moneyRegex) || [];
+      if (!matches.length) continue;
+
+      // take last two numbers sometimes present: (amount, balance) or (debit, credit)
+      // Heuristic: choose the rightmost "money-like" number as amount,
+      // but if line contains CR and DR, prefer the one nearest DR.
+      let amount = NaN;
+
+      // If DR appears, try to pick the number closest to DR token
+      const drIndex = low.indexOf("dr");
+      if (drIndex !== -1) {
+        // grab a window near "dr"
+        const near = line.slice(Math.max(0, drIndex - 25), Math.min(line.length, drIndex + 25));
+        const nearMatches = near.match(moneyRegex) || [];
+        if (nearMatches.length) amount = toNumber(nearMatches[nearMatches.length - 1]);
+      }
+
+      if (!Number.isFinite(amount)) {
+        // fallback: rightmost number in whole line
+        amount = toNumber(matches[matches.length - 1]);
+      }
+
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+
+      // keep only debit lines
+      if (!isDebitLine(low)) continue;
+
+      // description: remove date and trailing amount/balance junk
+      let desc = line;
+
+      // remove date part
+      desc = desc.replace(/\b([0-3]?\d)[\/\-]([0-1]?\d)[\/\-](20\d{2})\b/, " ");
+      desc = desc.replace(/\b(20\d{2})[\/\-](0?\d|1[0-2])[\/\-]([0-2]?\d|3[01])\b/, " ");
+
+      // remove CR/DR tokens and currency words
+      desc = desc
+        .replace(/\b(CR|DR|Cr|Dr)\b/g, " ")
+        .replace(/\b(debit|credit)\b/gi, " ")
+        .replace(/\b(INR|Rs\.?|₹)\b/gi, " ");
+
+      // remove all amounts from desc (so it becomes clean narration)
+      desc = desc.replace(moneyRegex, " ");
+
+      desc = desc.replace(/ +/g, " ").trim();
+      if (!desc) desc = "Expense";
+
+      const item = {
+        name: desc,
+        amount: Number(amount),
+        date: isoDate,
+        category: detectCategory(desc),
+      };
+
+      const key = `${item.date}__${item.amount}__${item.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      tx.push(item);
+    }
+
+    return tx;
+  };
+
+  // ✅ OCR all pages and combine text
+  let combinedText = "";
+  for await (const page of pages) {
+    const rawText = await ocrBuffer(page);
+    if (rawText) combinedText += "\n" + rawText;
+  }
+
+  // ✅ Extract MULTIPLE debit transactions
+  const transactions = parseDebitTransactionsFromText(combinedText);
+
+  // If nothing found with strict debit filter, fallback to "any transactions"
+  // (still multiple) — but keep it safe by not returning empty
+  if (!transactions.length) {
+    const fallback = [];
+    const text = normalizeDigits(String(combinedText || ""));
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+    for (const line of lines) {
+      const isoDate = lineDateISO(line);
+      if (!isoDate) continue;
+
+      const matches = line.match(/(?:₹\s*)?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\b\d+(?:\.\d{1,2})?\b/g) || [];
+      if (!matches.length) continue;
+
+      const amt = Number(String(matches[matches.length - 1]).replace(/[₹,\s]/g, ""));
+      if (!Number.isFinite(amt) || amt <= 0) continue;
+
+      // simple narration cleanup
+      let desc = line.replace(matches[matches.length - 1], "").trim();
+      desc = desc.replace(/ +/g, " ").trim();
+      if (!desc) desc = "Expense";
+
+      fallback.push({
+        name: desc,
+        amount: amt,
+        date: isoDate,
+        category: detectCategory(desc),
+      });
+    }
+
+    return res.json({ success: true, type: "pdf", data: fallback });
+  }
+
+  return res.json({ success: true, type: "pdf", data: transactions });
+}
 
 export default router;
