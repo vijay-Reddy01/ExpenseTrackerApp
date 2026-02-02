@@ -1,6 +1,6 @@
 {
   "expo": {
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "name": "AI Expense Tracker",
     "slug": "ai-expense-tracker",
     "version": "1.0.0",
