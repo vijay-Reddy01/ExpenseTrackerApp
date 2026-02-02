@@ -48,43 +48,70 @@ function normalizeDigits(text) {
 
 function extractAmount(text) {
   const normalized = normalizeDigits(String(text || "").toLowerCase());
-  const lines = normalized
+
+  // Remove common non-amount long numbers that confuse OCR (GSTIN, phone etc.)
+  const cleaned = normalized.replace(/\b\d{10,}\b/g, " ");
+
+  const lines = cleaned
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 
+  // More keywords used on Indian receipts
   const keys = [
     "net payable",
-    "net amount",
     "amount payable",
     "grand total",
+    "total amount",
     "total",
-    "gross amt",
-    "gross amount",
+    "balance due",
+    "amount due",
+    "payable",
+    "subtotal",
+    "sub total",
   ];
 
+  // Helper: extract last plausible money number from a string
+  const pickLastMoney = (s) => {
+    // Matches: 123, 123.45, 1,234.50, ₹123.00
+    const matches = s.match(/(?:₹\s*)?\d{1,3}(?:,\d{3})*(?:\.\d{2})?/g);
+    if (!matches?.length) return null;
+
+    // Convert to numbers
+    const nums = matches
+      .map((m) => Number(m.replace(/[₹,\s]/g, "")))
+      .filter((n) => !Number.isNaN(n) && n > 0 && n < 1000000);
+
+    if (!nums.length) return null;
+    return nums[nums.length - 1];
+  };
+
+  // 1) Prefer numbers near total keywords
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
     for (const k of keys) {
       if (line.includes(k)) {
         const window = [line, lines[i + 1] || "", lines[i + 2] || ""].join(" ");
-        const nums = window.match(/(\d+\.\d{2}|\d{3,6})/g);
-        if (nums?.length) {
-          const val = Number(nums[nums.length - 1]);
-          if (!Number.isNaN(val) && val > 0) return val;
-        }
+        const val = pickLastMoney(window);
+        if (val != null) return val;
       }
     }
   }
 
-  const allNums = (normalized.match(/(\d+\.\d{2}|\d{3,6})/g) || [])
-    .map(Number)
-    .filter((n) => !Number.isNaN(n) && n > 50 && n < 1000000);
+  // 2) Fallback: choose the largest MONEY-like number (but ignore tiny values)
+  const allMoney = cleaned.match(/(?:₹\s*)?\d{1,3}(?:,\d{3})*(?:\.\d{2})?/g) || [];
+  const nums = allMoney
+    .map((m) => Number(m.replace(/[₹,\s]/g, "")))
+    .filter((n) => !Number.isNaN(n) && n >= 10 && n < 1000000);
 
-  if (!allNums.length) return null;
-  return Math.max(...allNums);
+  if (!nums.length) return null;
+
+  // prefer values with decimals if present (usually totals)
+  const decimals = nums.filter((n) => Number.isInteger(n) === false);
+  return decimals.length ? Math.max(...decimals) : Math.max(...nums);
 }
+
 
 function extractName(text) {
   const lines = String(text || "")
@@ -92,8 +119,34 @@ function extractName(text) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  return lines.find((l) => l.length > 5 && !l.match(/\d/)) || "Expense";
+  const reject = [
+    "tax invoice",
+    "invoice",
+    "cash memo",
+    "bill",
+    "gstin",
+    "phone",
+    "mobile",
+    "total",
+    "subtotal",
+    "amount",
+    "date",
+  ];
+
+  // Choose first meaningful line (letters, not mostly numbers)
+  for (const l of lines.slice(0, 12)) {
+    const low = l.toLowerCase();
+    if (reject.some((r) => low.includes(r))) continue;
+
+    const letters = (l.match(/[a-zA-Z]/g) || []).length;
+    const digits = (l.match(/\d/g) || []).length;
+
+    if (letters >= 4 && digits <= 3 && l.length >= 4) return l;
+  }
+
+  return "Expense";
 }
+
 
 function extractDate(text) {
   const t = String(text || "").replace(/\s+/g, " ");
