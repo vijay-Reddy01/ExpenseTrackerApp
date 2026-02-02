@@ -112,7 +112,6 @@ function extractAmount(text) {
   return decimals.length ? Math.max(...decimals) : Math.max(...nums);
 }
 
-
 function extractName(text) {
   const lines = String(text || "")
     .split("\n")
@@ -146,7 +145,6 @@ function extractName(text) {
 
   return "Expense";
 }
-
 
 function extractDate(text) {
   const t = String(text || "").replace(/\s+/g, " ");
@@ -273,8 +271,6 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
     }
 
     // ✅ PDF CASE
-// ✅ PDF CASE
-    // ✅ PDF CASE
     if (mime === "application/pdf") {
       let pages;
       try {
@@ -288,7 +284,9 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
         });
       }
 
-      // --- helper: parse date from a single line ---
+      // ✅ define once so both parser + fallback can use it (fixes moneyRegex undefined)
+      const moneyRegex = /\b\d+(?:\.\d{1,2})?\b/g;
+
       const lineDateISO = (line) => {
         const iso = extractDate(line);
         if (iso) return iso;
@@ -301,9 +299,7 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
           return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`).toISOString();
         }
 
-        m = line.match(
-          /\b(20\d{2})[\/\-](0?\d|1[0-2])[\/\-]([0-2]?\d|3[01])\b/
-        );
+        m = line.match(/\b(20\d{2})[\/\-](0?\d|1[0-2])[\/\-]([0-2]?\d|3[01])\b/);
         if (m) {
           const yyyy = m[1];
           const mm = String(m[2]).padStart(2, "0");
@@ -314,151 +310,125 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
         return null;
       };
 
-      // --- helper: parse statement text into multiple debit transactions ---
-// --- helper: parse statement text into multiple debit transactions (table-aware) ---
-const parseDebitTransactionsFromText = (rawText) => {
-  if (!rawText) return [];
+      const parseDebitTransactionsFromText = (rawText) => {
+        if (!rawText) return [];
 
-  const text = normalizeDigits(String(rawText || ""))
-    .replace(/\u00A0/g, " ")
-    .replace(/[|]+/g, " ")
-    .replace(/\t+/g, " ")
-    .replace(/ +/g, " ");
+        const text = normalizeDigits(String(rawText || ""))
+          .replace(/\u00A0/g, " ")
+          .replace(/[|]+/g, " ")
+          .replace(/\t+/g, " ")
+          .replace(/ +/g, " ");
 
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+        const lines = text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean);
 
-  const tx = [];
-  const seen = new Set();
+        const tx = [];
+        const seen = new Set();
 
-  // money tokens (already commas removed by normalizeDigits)
-  const moneyRegex = /\b\d+(?:\.\d{1,2})?\b/g;
+        const toNumber = (s) => {
+          const n = Number(String(s).replace(/[₹,\s]/g, ""));
+          return Number.isFinite(n) ? n : NaN;
+        };
 
-  const toNumber = (s) => {
-    const n = Number(String(s).replace(/[₹,\s]/g, ""));
-    return Number.isFinite(n) ? n : NaN;
-  };
+        const shouldSkipLine = (low) => {
+          if (low.includes("sample bank")) return true;
+          if (low.includes("account holder")) return true;
+          if (low.includes("account number")) return true;
+          if (low.includes("statement date")) return true;
+          if (low.includes("this is a system")) return true;
+          if (low.includes("date description")) return true;
+          if (low.includes("debit")) return true;
+          if (low.includes("credit")) return true;
+          if (low.includes("balance")) return true;
+          return false;
+        };
 
-  const shouldSkipLine = (low) => {
-    // skip header/meta lines
-    if (low.includes("sample bank")) return true;
-    if (low.includes("account holder")) return true;
-    if (low.includes("account number")) return true;
-    if (low.includes("statement date")) return true;
-    if (low.includes("this is a system")) return true;
-    if (low.includes("date description")) return true;
-    if (low.includes("debit")) return true; // header row "Debit Credit Balance"
-    if (low.includes("credit")) return true;
-    if (low.includes("balance")) return true;
-    return false;
-  };
+        const creditKeywords = [
+          "salary",
+          "credit",
+          " cr ",
+          "refund",
+          "reversal",
+          "cashback",
+          "interest",
+          "freelance payment",
+          "payment received",
+          "received",
+          "deposit",
+        ];
 
-  // keywords to identify credit rows (we skip those)
-  const creditKeywords = [
-    "salary",
-    "credit",
-    "cr",
-    "refund",
-    "reversal",
-    "cashback",
-    "interest",
-    "freelance payment",
-    "payment received",
-    "received",
-    "deposit",
-  ];
+        for (const line of lines) {
+          const low = line.toLowerCase();
+          if (shouldSkipLine(low)) continue;
 
-  for (const line of lines) {
-    const low = line.toLowerCase();
-    if (shouldSkipLine(low)) continue;
+          const isoDate = lineDateISO(line);
+          if (!isoDate) continue;
 
-    // ✅ must start with a date-like token somewhere in the line
-    const isoDate = lineDateISO(line);
-    if (!isoDate) continue;
+          const matches = line.match(moneyRegex) || [];
+          if (matches.length < 2) continue;
 
-    // ✅ Must contain numbers (usually debit/credit + balance)
-    const matches = line.match(moneyRegex) || [];
-    if (matches.length < 2) continue; // need at least [amount, balance]
+          // description is everything before first amount token
+          const firstAmtStr = matches[0];
+          const firstAmtIndex = firstAmtStr ? line.indexOf(firstAmtStr) : -1;
+          if (firstAmtIndex === -1) continue;
 
-    // ✅ Find where the first amount appears in the string
-    // description = text between date and first amount
-    const firstAmtMatch = line.match(moneyRegex);
-    const firstAmtStr = firstAmtMatch?.[0];
-    const firstAmtIndex = firstAmtStr ? line.indexOf(firstAmtStr) : -1;
+          let desc = line.slice(0, firstAmtIndex).trim();
 
-    // If we can't locate first amount, skip
-    if (firstAmtIndex === -1) continue;
+          // remove dates from desc
+          desc = desc
+            .replace(/\b([0-3]?\d)[\/\-]([0-1]?\d)[\/\-](20\d{2})\b/g, " ")
+            .replace(/\b(20\d{2})[\/\-](0?\d|1[0-2])[\/\-]([0-2]?\d|3[01])\b/g, " ")
+            .replace(/ +/g, " ")
+            .trim();
 
-    // Build description substring
-    // Remove the date portion loosely by chopping from start to first amount
-    // then clean leftover dates again
-    let desc = line.slice(0, firstAmtIndex).trim();
+          if (desc.toLowerCase().includes("opening balance")) continue;
 
-    // remove date patterns from description
-    desc = desc
-      .replace(/\b([0-3]?\d)[\/\-]([0-1]?\d)[\/\-](20\d{2})\b/g, " ")
-      .replace(/\b(20\d{2})[\/\-](0?\d|1[0-2])[\/\-]([0-2]?\d|3[01])\b/g, " ")
-      .replace(/ +/g, " ")
-      .trim();
+          let debit = NaN;
 
-    // skip opening balance rows
-    if (desc.toLowerCase().includes("opening balance")) continue;
+          if (matches.length >= 3) {
+            // table usually gives: debit, credit, balance
+            debit = toNumber(matches[0]);
+          } else {
+            // 2 numbers => (debit, balance) OR (credit, balance)
+            const isLikelyCredit = creditKeywords.some((k) => low.includes(k));
+            if (isLikelyCredit) continue;
+            debit = toNumber(matches[0]);
+          }
 
-    // ✅ Determine which number is the DEBIT
-    // Typical rows:
-    // Debit row: [debit, balance] OR [debit, credit, balance]
-    // Credit row: [credit, balance] OR [debit, credit, balance] with debit empty (rare in OCR)
-    let debit = NaN;
+          if (!Number.isFinite(debit) || debit <= 0) continue;
 
-    if (matches.length >= 3) {
-      // assume [debit, credit, balance]
-      debit = toNumber(matches[0]);
-    } else {
-      // matches.length == 2 => could be debit+balance OR credit+balance
-      // use keyword-based filtering to skip credit-only lines
-      const isLikelyCredit = creditKeywords.some((k) => low.includes(k));
-      if (isLikelyCredit) continue;
+          desc = desc.replace(/[-–—]+$/g, "").trim();
+          if (!desc) desc = "Expense";
 
-      // treat first number as debit
-      debit = toNumber(matches[0]);
-    }
+          const item = {
+            name: desc,
+            amount: Number(debit),
+            date: isoDate,
+            category: detectCategory(desc),
+          };
 
-    if (!Number.isFinite(debit) || debit <= 0) continue;
+          const key = `${item.date}__${item.amount}__${item.name}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
 
-    // ✅ clean description: remove trailing separators
-    desc = desc.replace(/[-–—]+$/g, "").trim();
-    if (!desc) desc = "Expense";
+          tx.push(item);
+        }
 
-    const item = {
-      name: desc,
-      amount: Number(debit),
-      date: isoDate,
-      category: detectCategory(desc),
-    };
+        return tx;
+      };
 
-    const key = `${item.date}__${item.amount}__${item.name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    tx.push(item);
-  }
-
-  return tx;
-};
-
-
-      // ✅ OCR all pages and combine text
+      // ✅ OCR all pages and combine
       let combinedText = "";
       for await (const page of pages) {
         const rawText = await ocrBuffer(page);
         if (rawText) combinedText += "\n" + rawText;
       }
 
-      // ✅ Extract MULTIPLE debit transactions
       const transactions = parseDebitTransactionsFromText(combinedText);
 
+      // fallback if strict parser returned nothing
       if (!transactions.length) {
         const fallback = [];
         const text = normalizeDigits(String(combinedText || ""));
@@ -501,6 +471,5 @@ const parseDebitTransactionsFromText = (rawText) => {
     });
   }
 });
-
 
 export default router;
