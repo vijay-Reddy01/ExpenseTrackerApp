@@ -313,60 +313,56 @@ router.post("/scan", uploadAnyReceiptField, async (req, res) => {
 const parseDebitTransactionsFromText = (rawText) => {
   if (!rawText) return [];
 
-  const text = normalizeDigits(String(rawText || ""))
+  let text = normalizeDigits(String(rawText || ""))
     .replace(/\u00A0/g, " ")
     .replace(/[|]+/g, " ")
     .replace(/\t+/g, " ")
-    .replace(/ +/g, " ");
+    .replace(/ +/g, " ")
+    .trim();
 
-  // ✅ Split by transaction date occurrences (DD-MM-YYYY or DD/MM/YYYY)
-  const dateRe = /\b([0-3]\d)[\/\-]([0-1]\d)[\/\-](20\d{2})\b/g;
+  // ✅ IMPORTANT: fix glued dates like "25.00003-01-2026" -> "25.000 03-01-2026"
+  text = text.replace(/(\d)([0-3]\d[\/\-][0-1]\d[\/\-](?:\d{2}|\d{4}))/g, "$1 $2");
 
-  // Find all date positions
+  // ✅ Accept DD-MM-YYYY or DD/MM/YYYY (also allow 2-digit year in OCR)
+  const dateRe = /([0-3]\d)[\/\-]([0-1]\d)[\/\-]((?:20)?\d{2})/g;
+
+  // Find all date occurrences (positions)
   const positions = [];
   let m;
   while ((m = dateRe.exec(text)) !== null) {
-    positions.push({ idx: m.index, date: `${m[3]}-${m[2]}-${m[1]}` });
+    let yy = m[3];
+    // convert 2-digit year to 20xx
+    if (yy.length === 2) yy = "20" + yy;
+    const isoYMD = `${yy}-${m[2]}-${m[1]}`;
+    positions.push({ idx: m.index, ymd: isoYMD });
   }
 
-  // If no date rows found, return empty
-  if (positions.length === 0) return [];
+  if (!positions.length) return [];
 
-  // Cut into chunks for each date row
+  // Build chunks from one date to next date
   const chunks = [];
   for (let i = 0; i < positions.length; i++) {
     const start = positions[i].idx;
     const end = i + 1 < positions.length ? positions[i + 1].idx : text.length;
-    chunks.push({ date: positions[i].date, row: text.slice(start, end).trim() });
+    chunks.push({ ymd: positions[i].ymd, row: text.slice(start, end).trim() });
   }
 
   const tx = [];
   const seen = new Set();
 
-  const shouldSkipRow = (low) => {
-    if (low.includes("statement date")) return true;
-    if (low.includes("account holder")) return true;
-    if (low.includes("account number")) return true;
-    if (low.includes("opening balance") && !low.includes("upi") && !low.includes("atm")) return true;
-    if (low.includes("date description")) return true;
-    return false;
-  };
-
   const creditKeywords = [
     "salary",
     "credit",
-    " cr ",
-    "refund",
-    "reversal",
-    "cashback",
-    "interest",
-    "freelance payment",
+    "freelance",
     "payment received",
     "received",
     "deposit",
+    "refund",
+    "cashback",
+    "interest",
   ];
 
-  // amounts in a chunk
+  // money tokens (after normalizeDigits commas removed)
   const moneyRe = /\b\d+(?:\.\d{1,2})?\b/g;
 
   const toNumber = (s) => {
@@ -377,39 +373,35 @@ const parseDebitTransactionsFromText = (rawText) => {
   for (const c of chunks) {
     const row = c.row;
     const low = row.toLowerCase();
-    if (shouldSkipRow(low)) continue;
 
-    // skip credit rows
+    // ✅ skip statement/meta/header chunks
+    if (low.includes("statement date")) continue;
+    if (low.includes("account holder")) continue;
+    if (low.includes("account number")) continue;
+    if (low.includes("date") && low.includes("description") && low.includes("debit")) continue;
+
+    // ✅ skip opening balance
+    if (low.includes("opening balance")) continue;
+
+    // ✅ skip credit rows
     if (creditKeywords.some((k) => low.includes(k))) continue;
 
-    const amounts = row.match(moneyRe) || [];
+    // Remove date tokens first, so amount extraction doesn't pick date parts
+    let withoutDates = row.replace(dateRe, " ").replace(/ +/g, " ").trim();
 
-    // In table rows, usually we will have at least:
-    // debit + balance  => 2 numbers
-    // debit + credit + balance => 3 numbers
-    // Sometimes OCR adds account number etc; we must filter unrealistic big values
-    const nums = amounts
+    // Extract numeric tokens: usually [debit, balance] OR [debit, credit, balance]
+    const nums = (withoutDates.match(moneyRe) || [])
       .map(toNumber)
       .filter((n) => Number.isFinite(n) && n > 0 && n < 10000000);
 
-    if (nums.length < 2) continue;
+    if (nums.length < 2) continue; // need at least debit + balance
 
-    // ✅ debit is the FIRST amount after the date/description
-    // balance is usually the last number (ignore it)
-    const debit = nums[0];
+    const debit = nums[0]; // ✅ first amount after removing dates = debit
     if (!Number.isFinite(debit) || debit <= 0) continue;
 
-    // ✅ description: remove date and numbers
-    let desc = row;
-
-    // remove first date token
-    desc = desc.replace(dateRe, " ");
-
-    // remove all numbers
-    desc = desc.replace(moneyRe, " ");
-
-    // cleanup tokens
-    desc = desc
+    // Description = remove all numbers after removing dates
+    let desc = withoutDates
+      .replace(moneyRe, " ")
       .replace(/\b(debit|credit|dr|cr|balance)\b/gi, " ")
       .replace(/ +/g, " ")
       .trim();
@@ -418,8 +410,8 @@ const parseDebitTransactionsFromText = (rawText) => {
 
     const item = {
       name: desc,
-      amount: debit,
-      date: new Date(`${c.date}T00:00:00.000Z`).toISOString(),
+      amount: Number(debit),
+      date: new Date(`${c.ymd}T00:00:00.000Z`).toISOString(),
       category: detectCategory(desc),
     };
 
@@ -427,14 +419,12 @@ const parseDebitTransactionsFromText = (rawText) => {
     if (seen.has(key)) continue;
     seen.add(key);
 
-    // Also skip "Opening Balance" if it slips through
-    if (item.name.toLowerCase().includes("opening balance")) continue;
-
     tx.push(item);
   }
 
   return tx;
 };
+
 
 
       // ✅ OCR all pages and combine
