@@ -387,16 +387,34 @@ const parseDebitTransactionsFromText = (rawText) => {
     if (creditKeywords.some((k) => low.includes(k))) continue;
 
     // Remove date tokens first, so amount extraction doesn't pick date parts
-    let withoutDates = row.replace(dateRe, " ").replace(/ +/g, " ").trim();
+let withoutDates = row.replace(dateRe, " ").replace(/ +/g, " ").trim();
 
-    // Extract numeric tokens: usually [debit, balance] OR [debit, credit, balance]
-    const nums = (withoutDates.match(moneyRe) || [])
-      .map(toNumber)
-      .filter((n) => Number.isFinite(n) && n > 0 && n < 10000000);
+// ✅ Fix thousand separators like 1.200 / 25.000 that OCR sometimes outputs
+// Convert ONLY patterns like "1.200" -> "1200" (dot + exactly 3 digits)
+withoutDates = withoutDates.replace(/\b(\d{1,3})\.(\d{3})\b/g, "$1$2");
 
-    if (nums.length < 2) continue; // need at least debit + balance
+const numsRaw = withoutDates.match(moneyRe) || [];
 
-    const debit = nums[0]; // ✅ first amount after removing dates = debit
+// Convert to numbers and filter realistic currency values
+const nums = numsRaw
+  .map(toNumber)
+  .filter((n) => Number.isFinite(n) && n > 0 && n < 10000000);
+
+// Need at least debit + balance
+if (nums.length < 2) continue;
+
+// ✅ Debit is usually the FIRST number (after fixing 1.200 -> 1200)
+// But if OCR mistakenly produced small values like 1 or 2, pick the first "reasonable" amount
+let debit = nums[0];
+
+// If debit is suspiciously tiny but later numbers look like real amounts (>= 10), pick first >= 10
+if (debit < 10) {
+  const candidate = nums.find((x) => x >= 10 && x <= 500000);
+  if (candidate) debit = candidate;
+}
+
+if (!Number.isFinite(debit) || debit <= 0) continue;
+// ✅ first amount after removing dates = debit
     if (!Number.isFinite(debit) || debit <= 0) continue;
 
     // Description = remove all numbers after removing dates
