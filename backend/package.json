@@ -22,7 +22,7 @@
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.12",
-    "openai": "^6.16.0",
+    "openai": "^6.17.0",
     "pdf-to-img": "^5.0.0",
     "tesseract.js": "^7.0.0"
   },

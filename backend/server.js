@@ -16,8 +16,8 @@ const app = express();
    MIDDLEWARE
 ======================= */
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "10mb" }));
-app.use("/api/receipt", receiptRouter); // ✅ receipt routes only
+app.use(express.json({ limit: "50mb" }));
+app.use("/api/receipt", receiptRouter);
 
 /* =======================
    DATABASE
@@ -222,7 +222,7 @@ app.post("/api/expenses", async (req, res) => {
 });
 
 /* =======================
-   ✅ SAVE SCANNED RECEIPT
+   SAVE SCANNED RECEIPT
 ======================= */
 app.post("/api/receipt/save", async (req, res) => {
   try {
@@ -251,7 +251,7 @@ app.post("/api/receipt/save", async (req, res) => {
 });
 
 /* =======================
-   ✅ SEND INSIGHTS EMAIL
+   SEND INSIGHTS EMAIL
 ======================= */
 app.post("/api/insights/email", async (req, res) => {
   try {
