@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+// frontend/screens/DashboardScreen.js
+import React, { useCallback, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -9,14 +10,25 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { PieChart } from "react-native-chart-kit";
+import { useFocusEffect } from "@react-navigation/native";
 import { useThemeApp } from "../theme/ThemeContext";
+import { api } from "../utils/api";
 
-// Helper to get start of week (Mon)
-const getStartOfWeek = (date) => {
-  const dt = new Date(date);
-  const day = dt.getDay();
-  const diff = dt.getDate() - day + (day === 0 ? -6 : 1);
-  return new Date(dt.setDate(diff));
+/* ✅ Week range (Mon 00:00 -> next Mon 00:00) */
+const getWeekRange = (date = new Date()) => {
+  const d = new Date(date);
+  const day = d.getDay(); // 0=Sun,1=Mon...
+  const diffToMonday = (day === 0 ? -6 : 1) - day;
+
+  const start = new Date(d);
+  start.setDate(d.getDate() + diffToMonday);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(start.getDate() + 7);
+  end.setHours(0, 0, 0, 0);
+
+  return { start, end };
 };
 
 const CATEGORY_COLORS = {
@@ -42,25 +54,66 @@ export default function DashboardScreen({ user, navigation }) {
   };
 
   const styles = makeStyles(colors);
-
-  const [chartView, setChartView] = useState("monthly");
   const { width } = useWindowDimensions();
 
-  const income = Number(user?.income || 0);
-  const transactions = Array.isArray(user?.transactions) ? user.transactions : [];
+  // ✅ local state that refreshes from backend
+  const [dashboardUser, setDashboardUser] = useState(user || {});
+  const [chartView, setChartView] = useState("all");
+
+  const email = String(user?.email || dashboardUser?.email || "")
+    .toLowerCase()
+    .trim();
+
+  const loadDashboard = useCallback(async () => {
+    try {
+      if (!email) return;
+      const res = await api.getDashboardData(email);
+      if (res?.success && res?.data) setDashboardUser(res.data);
+    } catch (e) {
+      console.log("loadDashboard error:", e?.message || e);
+    }
+  }, [email]);
+
+  // ✅ refresh whenever screen opens
+  useFocusEffect(
+    useCallback(() => {
+      loadDashboard();
+    }, [loadDashboard])
+  );
+
+  const income = Number(dashboardUser?.income || 0);
+  const transactions = Array.isArray(dashboardUser?.transactions)
+    ? dashboardUser.transactions
+    : [];
 
   const { pieData, recentTransactions, totalExpenses, topCategory } = useMemo(() => {
     const now = new Date();
+    const { start: weekStart, end: weekEnd } = getWeekRange(now);
 
-    const filtered = transactions
-      .filter((t) => {
-        const d = new Date(t?.date);
-        if (Number.isNaN(d.getTime())) return false;
+    // ✅ sort all transactions newest first
+    const allSorted = [...transactions].sort(
+      (a, b) => new Date(b?.date) - new Date(a?.date)
+    );
 
-        if (chartView === "weekly") return d >= getStartOfWeek(now);
+    // ✅ recent always from ALL
+    const recentAll = allSorted.slice(0, 5);
+
+    // ✅ filter for chart/totals based on toggle
+    const filtered = allSorted.filter((t) => {
+      const d = new Date(t?.date);
+      if (Number.isNaN(d.getTime())) return false;
+
+      if (chartView === "weekly") {
+        return d >= weekStart && d < weekEnd;
+      }
+
+      if (chartView === "monthly") {
         return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-      })
-      .sort((a, b) => new Date(b?.date) - new Date(a?.date));
+      }
+
+      // ✅ ALL
+      return true;
+    });
 
     const grouped = filtered.reduce((acc, t) => {
       const c = String(t?.category || "other").toLowerCase();
@@ -86,7 +139,7 @@ export default function DashboardScreen({ user, navigation }) {
 
     return {
       pieData: pie,
-      recentTransactions: filtered.slice(0, 5),
+      recentTransactions: recentAll,
       totalExpenses: total,
       topCategory: top,
     };
@@ -114,7 +167,7 @@ export default function DashboardScreen({ user, navigation }) {
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.title} numberOfLines={1}>
-            Welcome, {user?.username || "User"}
+            Welcome, {dashboardUser?.username || "User"}
           </Text>
           <Text style={styles.sub}>{headline}</Text>
         </View>
@@ -153,7 +206,7 @@ export default function DashboardScreen({ user, navigation }) {
         {/* Chart Card */}
         <View style={styles.card}>
           <View style={styles.toggleRow}>
-            {["weekly", "monthly"].map((v) => {
+            {["weekly", "monthly", "all"].map((v) => {
               const active = chartView === v;
               return (
                 <TouchableOpacity
@@ -180,9 +233,7 @@ export default function DashboardScreen({ user, navigation }) {
                 backgroundColor="transparent"
                 paddingLeft="10"
                 chartConfig={{
-                  // ✅ make chart labels readable on both light/dark
-                  color: (opacity = 1) =>
-                    `rgba(0,0,0,${opacity})`,
+                  color: (opacity = 1) => `rgba(0,0,0,${opacity})`,
                 }}
                 absolute
               />
@@ -192,19 +243,13 @@ export default function DashboardScreen({ user, navigation }) {
           )}
         </View>
 
-        {/* Recent Transactions */}
+        {/* Recent */}
         <View style={styles.card}>
-          <View
-            style={{
-              flexDirection: "row",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={styles.cardTitle}>Recent</Text>
 
             <TouchableOpacity
-              onPress={() => navigation.navigate("Expenses", { email: user?.email })}
+              onPress={() => navigation.navigate("Expenses", { email })}
               activeOpacity={0.8}
             >
               <Text style={{ color: colors.primary, fontWeight: "900" }}>Show all</Text>
@@ -284,18 +329,12 @@ const makeStyles = (colors) =>
       marginBottom: 12,
       gap: 6,
     },
-    toggle: {
-      flex: 1,
-      paddingVertical: 10,
-      borderRadius: 12,
-      alignItems: "center",
-    },
+    toggle: { flex: 1, paddingVertical: 10, borderRadius: 12, alignItems: "center" },
     toggleActive: { backgroundColor: colors.primary },
     toggleText: { color: colors.text, fontWeight: "900", fontSize: 13 },
     toggleTextActive: { color: "#fff" },
 
     chartWrap: { alignItems: "center", justifyContent: "center" },
-
     empty: { textAlign: "center", color: colors.muted, paddingVertical: 8 },
 
     tx: {

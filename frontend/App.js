@@ -19,6 +19,9 @@ import EditProfileScreen from "./screens/EditProfileScreen";
 import NotificationScreen from "./screens/NotificationScreen";
 import HelpSupportScreen from "./screens/HelpSupportScreen";
 
+
+import ScannerScreen from "./screens/ScannerScreen";
+const Stack = createStackNavigator();
 // ✅ These must exist in your project for Profile buttons to work
 
 
@@ -34,8 +37,9 @@ const ProfileStackNav = createStackNavigator();
 --------------------------- */
 function ProfileStack({ user, onLogout, reloadUser }) {
   return (
-    <ProfileStackNav.Navigator>
-      <ProfileStackNav.Screen name="ProfileHome" options={{ headerShown: false }}>
+    <ProfileStackNav.Navigator screenOptions={{headerShown: false}}>
+      <ProfileStackNav.Screen name="ProfileHome" 
+      options={{ headerShown: false }}>
         {(props) => (
           <ProfileScreen
             {...props}
@@ -138,7 +142,7 @@ function MainAppStack({ user, onLogout, reloadUser }) {
           />
         )}
       </AppStack.Screen>
-        <AppStack.Screen name="EditProfile" component={EditProfileScreen} />
+        <AppStack.Screen name="EditProfile" component={EditProfileScreen} options={{ headerShown: false }} />
         <AppStack.Screen name="Notifications" component={NotificationScreen} />
         <AppStack.Screen name="HelpSupport" component={HelpSupportScreen} />
 
@@ -216,6 +220,11 @@ function AppInner() {
             <RootStack.Screen name="SignUp">
               {(props) => <SignUpScreen {...props} onLogin={onLogin} />}
             </RootStack.Screen>
+            <Stack.Screen
+              name="Scanner"
+              component={ScannerScreen}
+            />
+
           </>
         ) : (
           <RootStack.Screen name="App">

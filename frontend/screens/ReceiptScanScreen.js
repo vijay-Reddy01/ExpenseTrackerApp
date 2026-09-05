@@ -7,7 +7,7 @@ import { useThemeApp } from "../theme/ThemeContext";
 import { api } from "../utils/api";
 import { navCallbacks } from "../utils/navCallbacks";
 
-export default function ReceiptScanScreen({ navigation }) {
+export default function ReceiptScanScreen({ navigation, route }) {
   const { colors } = useThemeApp();
   const styles = makeStyles(colors);
 
@@ -15,6 +15,13 @@ export default function ReceiptScanScreen({ navigation }) {
 
   const [permission, requestPermission] = useCameraPermissions();
   const [busy, setBusy] = useState(false);
+
+  // ✅ Get email safely (from route params OR global callback context you may have)
+  const email =
+    route?.params?.email ||
+    route?.params?.user?.email ||
+    route?.params?.userEmail ||
+    null;
 
   useEffect(() => {
     (async () => {
@@ -25,6 +32,12 @@ export default function ReceiptScanScreen({ navigation }) {
   const takePicture = async () => {
     try {
       if (!cameraRef.current || busy) return;
+
+      if (!email) {
+        Alert.alert("Login required", "User email missing. Please login again.");
+        return;
+      }
+
       setBusy(true);
 
       const photo = await cameraRef.current.takePictureAsync({
@@ -33,38 +46,66 @@ export default function ReceiptScanScreen({ navigation }) {
         skipProcessing: false,
       });
 
-      // ✅ Resize for better OCR + smaller upload
+      // ✅ Resize for smaller upload (prevents network fail)
       const manipulated = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ resize: { width: 1400 } }],
         { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG }
       );
 
-      // ✅ Call backend OCR
-      const res = await api.scanReceipt({ imageUri: manipulated.uri });
+      // ✅ Call backend OCR (may be slow)
+      const res = await api.scanReceipt({ imageUri: manipulated.uri, email });
 
       if (!res?.success) {
-        Alert.alert("Scan failed", "Could not read the receipt. Try again or enter manually.");
+        Alert.alert("Scan failed", res?.message || "Could not read the receipt. Try again.");
         return;
       }
 
       // backend returns: { success, type:"image", data:{ name, amount, category, date } }
-      const data = res.type === "image" ? res.data : null;
+      const data = res?.type === "image" ? res?.data : null;
 
-      if (data && typeof navCallbacks.onReceiptScanned === "function") {
-        navCallbacks.onReceiptScanned({
-          name: data.name || "",
-          amount: data.amount ?? "",
-          category: data.category || "other",
-          date: data.date || null,
-        });
+      const scanned = {
+        name: data?.name || "Expense",
+        amount: data?.amount ?? "",
+        category: data?.category || "other",
+        date: data?.date || null,
+      };
+
+      // ✅ Auto-save to DB (so it is stored)
+      // If amount is missing, don't save automatically.
+      if (scanned.amount !== "" && scanned.amount !== null && scanned.amount !== undefined) {
+        try {
+          await api.saveReceiptExpense({
+            email,
+            name: scanned.name,
+            amount: Number(scanned.amount) || 0,
+            category: scanned.category,
+            date: scanned.date,
+            description: "Scanned receipt",
+          });
+        } catch (saveErr) {
+          console.log("Save scanned expense failed:", saveErr?.message || saveErr);
+          // Not fatal: still send values back to Add Expense screen
+        }
+      }
+
+      // ✅ Send values back to AddExpense screen (your existing flow)
+      if (typeof navCallbacks.onReceiptScanned === "function") {
+        navCallbacks.onReceiptScanned(scanned);
       }
 
       Alert.alert("Scanned", "Receipt values loaded. Review and tap Add Expense.");
       navigation.goBack();
     } catch (e) {
       console.log("Scan error:", e);
-      Alert.alert("Error", e?.message || "Failed to capture receipt");
+
+      // Better error message
+      const msg =
+        e?.message?.includes("Network request failed")
+          ? "Network request failed. Check internet + backend URL + try again."
+          : e?.message || "Failed to capture receipt";
+
+      Alert.alert("Error", msg);
     } finally {
       setBusy(false);
     }

@@ -3,12 +3,20 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
-import mongoose from "mongoose";
 import cors from "cors";
 import bcrypt from "bcryptjs";
 
 import receiptRouter from "./routes/receipt.js";
 import { sendMail } from "./utils/mailer.js";
+import {
+  createExpense,
+  createUser,
+  deleteExpense,
+  findExpenses,
+  findUser,
+  updateUser,
+  userView,
+} from "./utils/jsonStore.js";
 
 const app = express();
 
@@ -19,9 +27,8 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "50mb" }));
 app.use("/api/receipt", receiptRouter);
 
-/* =======================
-   DATABASE
-======================= */
+/* Legacy MongoDB configuration and schemas are intentionally disabled.
+   Persistence is handled by utils/jsonStore.js and backend/data/*.json.
 const MONGO_URI =
   process.env.MONGO_URI || "mongodb://127.0.0.1:27017/ExpenseTrackerApp";
 
@@ -30,9 +37,7 @@ mongoose
   .then(() => console.log("✅ MongoDB connected successfully"))
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
-/* =======================
-   SCHEMAS
-======================= */
+// Legacy schemas removed.
 const userSchema = new mongoose.Schema(
   {
     username: { type: String, required: true, trim: true },
@@ -69,6 +74,7 @@ const expenseSchema = new mongoose.Schema(
   { timestamps: true }
 );
 const Expense = mongoose.models.Expense || mongoose.model("Expense", expenseSchema);
+*/
 
 /* =======================
    HEALTH
@@ -91,12 +97,12 @@ app.post("/api/signup", async (req, res) => {
       return res.status(400).json({ success: false, message: "All fields are required." });
     }
 
-    const exists = await User.findOne({ email: cleanEmail });
+    const exists = await findUser(cleanEmail);
     if (exists) return res.status(409).json({ success: false, message: "User already exists." });
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newUser = await User.create({
+    const newUser = await createUser({
       username: cleanUsername,
       email: cleanEmail,
       password: hashedPassword,
@@ -122,10 +128,12 @@ app.post("/api/login", async (req, res) => {
       return res.status(400).json({ success: false, message: "Email and password required." });
     }
 
-    const user = await User.findOne({ email: cleanEmail });
+    const user = await findUser(cleanEmail);
     if (!user) return res.status(401).json({ success: false, message: "Invalid credentials." });
 
-    const ok = await bcrypt.compare(password, user.password);
+    const ok = String(user.password).startsWith("$2")
+      ? await bcrypt.compare(password, user.password)
+      : password === user.password;
     if (!ok) return res.status(401).json({ success: false, message: "Invalid credentials." });
 
     return res.json({
@@ -145,14 +153,14 @@ app.get("/api/user/data", async (req, res) => {
     const email = String(req.query.email || "").toLowerCase().trim();
     if (!email) return res.status(400).json({ success: false, message: "Email required." });
 
-    const user = await User.findOne({ email }).select("-password").lean();
+    const user = await findUser(email);
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
-    const expenses = await Expense.find({ userEmail: email }).sort({ date: -1 }).lean();
+    const expenses = (await findExpenses(email)).sort((a, b) => new Date(b.date) - new Date(a.date));
 
     return res.json({
       success: true,
-      data: { ...user, transactions: expenses },
+      data: { ...userView(user), transactions: expenses },
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err?.message || "Failed to load data." });
@@ -178,17 +186,11 @@ app.post("/api/user/profile", async (req, res) => {
       return res.status(400).json({ success: false, message: "Photo too large." });
     }
 
-    const updated = await User.findOneAndUpdate(
-      { email },
-      { $set: { username, income: incomeNum, photoUrl } },
-      { new: true }
-    )
-      .select("-password")
-      .lean();
+    const updated = await updateUser(email, { username, income: incomeNum, photoUrl });
 
     if (!updated) return res.status(404).json({ success: false, message: "User not found." });
 
-    return res.json({ success: true, message: "Profile updated.", user: updated });
+    return res.json({ success: true, message: "Profile updated.", user: userView(updated) });
   } catch (err) {
     return res.status(500).json({ success: false, message: err?.message || "Profile update failed." });
   }
@@ -206,12 +208,12 @@ app.post("/api/expenses", async (req, res) => {
       return res.status(400).json({ success: false, message: "Required fields missing." });
     }
 
-    const expense = await Expense.create({
+    const expense = await createExpense({
       userEmail: cleanEmail,
       name: String(name).trim(),
       amount: Number(amount),
       category,
-      date: date ? new Date(date) : new Date(),
+      date: date ? new Date(date).toISOString() : new Date().toISOString(),
       description: String(description || "").trim(),
     });
 
@@ -235,12 +237,12 @@ app.post("/api/receipt/save", async (req, res) => {
       return res.status(400).json({ success: false, message: "Missing fields." });
     }
 
-    const expense = await Expense.create({
+    const expense = await createExpense({
       userEmail: cleanEmail,
       name: String(name).trim(),
       amount: Number(amount),
       category,
-      date: date ? new Date(date) : new Date(),
+      date: date ? new Date(date).toISOString() : new Date().toISOString(),
       description: String(description || "Scanned receipt").trim(),
     });
 
@@ -260,10 +262,10 @@ app.post("/api/insights/email", async (req, res) => {
 
     if (!email) return res.status(400).json({ success: false, message: "Email required." });
 
-    const user = await User.findOne({ email }).lean();
+    const user = await findUser(email);
     if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
-    const tx = await Expense.find({ userEmail: email }).lean();
+    const tx = await findExpenses(email);
 
     const now = new Date();
     const month = now.getMonth();
@@ -355,7 +357,7 @@ app.delete("/api/expenses/:id", async (req, res) => {
     const email = String(req.query.email || "").toLowerCase().trim();
     if (!email) return res.status(400).json({ success: false, message: "Email required" });
 
-    const deleted = await Expense.findOneAndDelete({ _id: id, userEmail: email });
+    const deleted = await deleteExpense(id, email);
     if (!deleted) return res.status(404).json({ success: false, message: "Expense not found" });
 
     return res.json({ success: true, message: "Deleted", deletedId: id });

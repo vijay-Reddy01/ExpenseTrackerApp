@@ -8,14 +8,16 @@ import {
   Image,
   Alert,
   ScrollView,
-  Platform
+  Platform,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeApp } from "../theme/ThemeContext";
 
 export default function ProfileScreen({ navigation, user, onLogout, onProfileUpdate }) {
   const { toggleTheme, mode, colors } = useThemeApp();
   const styles = makeStyles(colors);
+  const insets = useSafeAreaInsets();
 
   const profile = useMemo(() => {
     return {
@@ -27,21 +29,19 @@ export default function ProfileScreen({ navigation, user, onLogout, onProfileUpd
   }, [user?.username, user?.email, user?.income, user?.photoUrl]);
 
   const logout = () => {
-  if (Platform.OS === "web") {
-    const ok = window.confirm("Logout?");
-    if (ok) onLogout?.();
-    return;
-  }
+    if (Platform.OS === "web") {
+      const ok = window.confirm("Logout?");
+      if (ok) onLogout?.();
+      return;
+    }
 
-  Alert.alert("Logout?", "Are you sure?", [
-    { text: "Cancel", style: "cancel" },
-    { text: "Logout", style: "destructive", onPress: () => onLogout?.() },
-  ]);
-};
-
+    Alert.alert("Logout?", "Are you sure?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Logout", style: "destructive", onPress: () => onLogout?.() },
+    ]);
+  };
 
   // ✅ Pick photo as BASE64 and go to EditProfile
-  // (EditProfile will save to DB on Save)
   const pickImageAndGoEdit = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -54,7 +54,7 @@ export default function ProfileScreen({ navigation, user, onLogout, onProfileUpd
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.7,
-        base64: true, // ✅ IMPORTANT
+        base64: true,
       });
 
       if (result.canceled) return;
@@ -65,7 +65,6 @@ export default function ProfileScreen({ navigation, user, onLogout, onProfileUpd
         return;
       }
 
-      // ✅ Data URL works on web + mobile and can be stored in MongoDB
       const dataUrl = `data:image/jpeg;base64,${asset.base64}`;
 
       navigation.navigate("EditProfile", {
@@ -85,14 +84,18 @@ export default function ProfileScreen({ navigation, user, onLogout, onProfileUpd
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      {/* Theme toggle */}
+    <ScrollView contentContainerStyle={[styles.container, { paddingTop: insets.top + 10 }]}>
+      {/* ✅ Theme toggle moved down using safe area */}
       <TouchableOpacity
         onPress={toggleTheme}
         activeOpacity={0.85}
         style={[
           styles.themeToggleBtn,
-          { backgroundColor: colors.card, borderColor: colors.border },
+          {
+            top: insets.top + 10, // ✅ pushes down below notch/status bar
+            backgroundColor: colors.card,
+            borderColor: colors.border,
+          },
         ]}
       >
         <Text style={{ fontSize: 18 }}>{mode === "dark" ? "🌙" : "☀️"}</Text>
@@ -103,9 +106,7 @@ export default function ProfileScreen({ navigation, user, onLogout, onProfileUpd
           <Image source={{ uri: profile.photoUrl }} style={styles.avatar} />
         ) : (
           <View style={styles.avatarFallback}>
-            <Text style={styles.avatarLetter}>
-              {(profile.name?.[0] || "U").toUpperCase()}
-            </Text>
+            <Text style={styles.avatarLetter}>{(profile.name?.[0] || "U").toUpperCase()}</Text>
           </View>
         )}
 
@@ -139,9 +140,8 @@ export default function ProfileScreen({ navigation, user, onLogout, onProfileUpd
         />
 
         <TouchableOpacity style={styles.logoutBtn} onPress={logout} activeOpacity={0.9}>
-  <Text style={styles.logoutText}>Log Out</Text>
-</TouchableOpacity>
-
+          <Text style={styles.logoutText}>Log Out</Text>
+        </TouchableOpacity>
 
         <Text style={styles.themeHint}>
           Current theme: {mode === "dark" ? "Dark" : "Light"}
@@ -187,7 +187,7 @@ const makeStyles = (colors) =>
 
     themeToggleBtn: {
       position: "absolute",
-      top: 16,
+      // ✅ top will be overridden inline using insets.top + 10
       right: 16,
       zIndex: 99,
       width: 44,
